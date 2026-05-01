@@ -1,0 +1,7 @@
+version: v2
+plugins:
+  - remote: buf.build/apple/swift:v1.26.0
+    out: Sources/Protowire
+    opt:
+      - Visibility=Public
+      - FileNaming=PathToUnderscores
