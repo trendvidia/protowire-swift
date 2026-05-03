@@ -59,24 +59,62 @@ The package keeps `swift-tools-version: 5.10` for broader compatibility;
 1. **Codable bridge as the public API.** Users encode/decode their own
    `Codable` types via `PXFEncoder`/`PXFDecoder`/`PBEncoder`/`PBDecoder`.
    This keeps the surface idiomatic Swift even though it forces some
-   `Mirror`-based introspection in the encoder paths. A parallel
-   descriptor-driven path (against `SwiftProtobuf.Message`) is layered
-   on top for things that need real proto semantics (presence,
-   `(pxf.required)` / `(pxf.default)`, `_null` FieldMask, WKT defaults).
-2. **Final classes** for `Lexer`, `Parser`, `PXFEncoder`/`PXFDecoder`,
+   `Mirror`-based introspection in the encoder paths.
+2. **Wrapper sugar is name-gated, not heuristic.** `PXFEncoder` only
+   inlines `field = innerValue` for the nine SwiftProtobuf-generated
+   `Google_Protobuf_*Value` types (DoubleValue, FloatValue, Int64Value,
+   UInt64Value, Int32Value, UInt32Value, BoolValue, StringValue,
+   BytesValue) — see `PXFEncoder.isProtobufWrapper`. A user struct with
+   one `value` field gets emitted as a regular nested block; the previous
+   "any single-`value`-field type" heuristic was a quiet false-positive
+   trap. The decode side still recognizes a single `value` key in a
+   `_PXFSingleValueDecoder.WrapperContainer` for symmetry with the
+   encode-side hand-off.
+3. **`_null` FieldMask round-trip via the Codable container API.**
+   `PXFDecoder.unmarshalFull` pre-walks the document for `field = null`
+   entries, marks them in the `Result`, then synthesizes a `_null` key
+   in the keyed container at the top level. The user's struct can declare
+   `_null` as `[String]` or as `Google_Protobuf_FieldMask` — the decoder
+   returns the populated value to the synthesized init. Encode side
+   already worked: the encoder reads a `_null` field via Mirror and
+   emits `field = null` for each path.
+4. **Final classes** for `Lexer`, `Parser`, `PXFEncoder`/`PXFDecoder`,
    `PBEncoder`/`PBDecoder`, `SBEMarshaller`/`SBEUnmarshaller`,
    `MessageTemplate`. Subclassing isn't a use case.
-3. **Throw, don't `fatalError`, in throwing Codable methods.** Some
+5. **Throw, don't `fatalError`, in throwing Codable methods.** Some
    non-throwing protocol methods (`Encoder.unkeyedContainer()`,
    `singleValueContainer()`) still `fatalError` when misused — that's
    a Swift Codable API limitation. `SBE.View` uses `fatalError` for
    misuse by deliberate design (fast-path read API, parity with `Array`).
-4. **Generated code stays under `Sources/Protowire/*.pb.swift`.** Regen
+6. **Generated code stays under `Sources/Protowire/*.pb.swift`.** Regen
    via `buf generate` (plugin pin: `buf.build/apple/swift:v1.37.0`,
    matching the swift-protobuf runtime version). If you update the
    runtime in `Package.swift`, bump the plugin pin in `buf.gen.yaml`
    to match — mismatches produce ~50 deprecation warnings about
    `init(dictionaryLiteral:)`.
+
+## Open gaps (not yet implemented)
+
+- **`(pxf.required)` / `(pxf.default)` annotation enforcement.** The
+  Go / C# / Rust / Java / TypeScript ports all enforce these via
+  descriptor-level reflection at decode time (validate required, apply
+  default for absent-not-null). Swift's swift-protobuf runtime doesn't
+  expose a runtime reflection API comparable to
+  `Google.Protobuf.Reflection.IFieldAccessor` — its design is
+  codegen-driven, with each generated message type having hand-written
+  `traverse` / `decodeMessage` methods rather than a generic descriptor
+  walk. Closing the gap means either: (a) building a Swift descriptor
+  reflection layer on top of `Google_Protobuf_FileDescriptorProto` and
+  `Google_Protobuf_FieldOptions`, or (b) introducing a marker protocol
+  (`PXFAnnotated`) that user Codable types opt into to declare
+  required/default field metadata. Neither path has been started.
+- **Descriptor-driven SBE codec.** Go/C++/Rust/Java/C# all have a
+  `Codec(file_descriptor)` that builds a `MessageTemplate` from
+  `(sbe.template_id)` / `(sbe.length)` / `(sbe.encoding)` annotations
+  on a proto file. Swift's SBE codec is dictionary-template-driven —
+  users hand-build `SBE.MessageTemplate` instances. The cross-port
+  `bench-sbe` harness isn't shipped because the canonical 94-byte
+  layout requires the descriptor-driven path.
 
 ## What this repo does NOT contain
 

@@ -77,6 +77,19 @@ extension Google_Protobuf_ListValue: @retroactive Codable {
     }
 }
 
+extension Google_Protobuf_StringValue: @retroactive Codable {
+    public init(from decoder: Swift.Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.value = try container.decode(String.self, forKey: .value)
+    }
+    public func encode(to encoder: Swift.Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(value, forKey: .value)
+    }
+    enum CodingKeys: String, CodingKey { case value }
+}
+
 extension Google_Protobuf_FieldMask: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
@@ -331,23 +344,33 @@ final class PXFTests: XCTestCase {
         }
     }
 
-    func testWrapperSugarEncoding() throws {
-        // Mocking google.protobuf.StringValue
-        struct StringValue: Codable, Equatable {
-            var value: String
-        }
-        
+    func testWrapperSugarEncoding_protobufType() throws {
+        // PR4: wrapper sugar is restricted to the nine SwiftProtobuf-generated
+        // Google_Protobuf_*Value types. A real Google_Protobuf_StringValue
+        // emits as `field = "..."` (sugared), not `field = { value = "..." }`.
         struct Message: Codable, Equatable {
-            var label: StringValue
+            var label: Google_Protobuf_StringValue
         }
-        
-        let msg = Message(label: StringValue(value: "hello"))
-        let encoder = PXFEncoder()
-        let output = try encoder.encode(msg)
-        
-        // Expected: label = "hello" (NOT label = { value = "hello" })
-        XCTAssertTrue(output.contains("label = \"hello\""))
-        XCTAssertFalse(output.contains("{"))
+
+        var sv = Google_Protobuf_StringValue()
+        sv.value = "hello"
+        let msg = Message(label: sv)
+        let output = try PXFEncoder().encode(msg)
+
+        XCTAssertTrue(output.contains("label = \"hello\""), "got: \(output)")
+        XCTAssertFalse(output.contains("{"), "got: \(output)")
+    }
+
+    func testWrapperSugarEncoding_userTypeIsNotSugared() throws {
+        // PR4: a user struct with one `value` field is NOT a protobuf wrapper
+        // and should emit as a regular nested message. The previous heuristic
+        // ("any struct with a single `value` field") was a false-positive trap.
+        struct UserWrapper: Codable, Equatable { var value: String }
+        struct Message: Codable, Equatable { var label: UserWrapper }
+
+        let output = try PXFEncoder().encode(Message(label: UserWrapper(value: "hello")))
+        XCTAssertTrue(output.contains("label = {"), "got: \(output)")
+        XCTAssertTrue(output.contains("value = \"hello\""), "got: \(output)")
     }
 
     func testStructSupport() throws {

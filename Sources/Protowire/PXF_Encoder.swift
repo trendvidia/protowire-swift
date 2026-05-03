@@ -1,5 +1,22 @@
 import Foundation
 
+/// The set of fully-qualified type names SwiftProtobuf generates for the
+/// nine standard protobuf wrapper types. Any field whose CLR type matches one
+/// of these gets PXF wrapper sugar (`field = innerValue` instead of
+/// `field = { value = innerValue }`). User-defined types with a similar
+/// shape are NOT covered — that would be a fragile heuristic.
+private let protobufWrapperTypeNames: Set<String> = [
+    "Google_Protobuf_DoubleValue",
+    "Google_Protobuf_FloatValue",
+    "Google_Protobuf_Int64Value",
+    "Google_Protobuf_UInt64Value",
+    "Google_Protobuf_Int32Value",
+    "Google_Protobuf_UInt32Value",
+    "Google_Protobuf_BoolValue",
+    "Google_Protobuf_StringValue",
+    "Google_Protobuf_BytesValue",
+]
+
 public final class PXFEncoder {
     public var indent: String = "  "
     public var emitDefaults: Bool = false
@@ -37,6 +54,12 @@ public final class PXFEncoder {
         }
         bytes.append(0x22) // "
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Returns true iff `value`'s concrete type is one of the nine
+    /// SwiftProtobuf-generated wrapper types. Used to gate wrapper sugar.
+    public static func isProtobufWrapper(_ value: Any) -> Bool {
+        protobufWrapperTypeNames.contains(String(describing: type(of: value)))
     }
 
     public func encode<T: Encodable>(_ value: T) throws -> String {
@@ -157,10 +180,19 @@ private final class _PXFEncoder: Swift.Encoder {
             }
 
             let mirror = Mirror(reflecting: value)
-            
-            // Wrapper sugar: if it's a struct/class with a single field named "value", encode it directly.
-            if (mirror.displayStyle == .struct || mirror.displayStyle == .class) && mirror.children.count == 1 {
-                if let first = mirror.children.first, first.label == "value", let enc = first.value as? Encodable {
+
+            // Wrapper sugar: only the nine SwiftProtobuf-generated wrapper
+            // types (Google_Protobuf_{Double,Float,Int64,UInt64,Int32,UInt32,
+            // Bool,String,Bytes}Value) get inlined as `key = innerValue`.
+            // A previous heuristic also matched any user struct/class with a
+            // single `value` member, but that caught false positives — for
+            // example a user type with one Codable field happens to look like
+            // a wrapper but isn't one. Tightening to the named protobuf
+            // wrappers makes the behavior predictable and keeps user types
+            // emitted as proper nested messages.
+            if PXFEncoder.isProtobufWrapper(value) {
+                if let first = mirror.children.first(where: { $0.label == "value" }),
+                   let enc = first.value as? Encodable {
                     try encode(enc, forKey: key)
                     return
                 }

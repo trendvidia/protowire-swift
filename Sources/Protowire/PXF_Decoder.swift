@@ -50,25 +50,20 @@ public final class PXFDecoder {
     public func unmarshalFull<T: Decodable>(_ type: T.Type, from string: String) throws -> (T, PXF.Result) {
         let doc = try PXF.Parser(string: string).parseDocument()
         var result = PXF.Result()
-        let decoder = _PXFDecoder(entries: doc.entries, result: &result, typeResolver: typeResolver)
-        var value = try T(from: decoder)
-        
-        // Attempt to populate _null FieldMask if it exists
-        populateNullMask(&value, result: result)
-        
-        return (value, result)
-    }
-
-    private func populateNullMask<T>(_ value: inout T, result: PXF.Result) {
-        let mirror = Mirror(reflecting: value)
-        for child in mirror.children {
-            if child.label == "_null" {
-                // In SwiftProtobuf, FieldMask.paths is a [String]
-                // Setting it via reflection on a struct is impossible.
-                // The user likely needs to use the Result object.
-                // But for classes or if we use a protocol, we could do it.
+        // Pre-walk the document so any top-level `field = null` entries land in
+        // `result.nullFields` BEFORE T's synthesized init runs. The keyed
+        // container's contains/decode entry points then surface `_null` as a
+        // populated [String] / Google_Protobuf_FieldMask if the user's type
+        // declares it. Without this, T(from: decoder) runs first and finds an
+        // empty result.
+        for entry in doc.entries {
+            if let a = entry as? PXF.Assignment, a.value is PXF.NullVal {
+                result.markNull(path: a.key)
             }
         }
+        let decoder = _PXFDecoder(entries: doc.entries, result: &result, typeResolver: typeResolver)
+        let value = try T(from: decoder)
+        return (value, result)
     }
 }
 
@@ -112,7 +107,16 @@ private final class _PXFDecoder: Swift.Decoder {
         }
 
         func contains(_ k: Key) -> Bool {
-            let present = decoder.entries.contains { 
+            // The reserved `_null` field is synthesized from presence-tracking
+            // state: when the user calls unmarshalFull and any field was set
+            // to null, we let the decoder return a populated `_null` to the
+            // user's struct (as either [String] or Google_Protobuf_FieldMask).
+            if k.stringValue == "_null", codingPath.isEmpty,
+               let result = decoder.result?.pointee,
+               !result.allNullFields.isEmpty {
+                return true
+            }
+            let present = decoder.entries.contains {
                 if let a = $0 as? PXF.Assignment { return a.key == k.stringValue }
                 else if let b = $0 as? PXF.Block { return b.name == k.stringValue }
                 else if let m = $0 as? PXF.MapEntry { return m.key == k.stringValue }
@@ -163,6 +167,29 @@ private final class _PXFDecoder: Swift.Decoder {
         func decode<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T {
             if T.self == Data.self { let v = try getValue(k); if let x = v as? PXF.BytesVal { return x.value as! T } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected bytes (base64) for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
             if T.self == Date.self { let v = try getValue(k); if let x = v as? PXF.TimestampVal { return x.value as! T } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected timestamp for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
+
+            // Synthetic `_null` at the top of the message: hand the user the
+            // null-paths tracked by the Result. This is the read side of the
+            // FieldMask round-trip. Encoder side (PXF_Encoder.encode<T>) walks
+            // the user's `_null` field via Mirror and emits `field = null`.
+            if k.stringValue == "_null", codingPath.isEmpty,
+               let result = decoder.result?.pointee {
+                let paths = result.allNullFields
+                if T.self == [String].self { return paths as! T }
+                if String(describing: T.self) == "Google_Protobuf_FieldMask" {
+                    var fm = Google_Protobuf_FieldMask()
+                    fm.paths = paths
+                    return fm as! T
+                }
+                // For any other Decodable, fall through and let the synthesized
+                // init handle it via singleValueContainer. This keeps custom
+                // FieldMask-like types working (e.g., a `struct NullMask:
+                // Codable { var paths: [String] }`).
+                return try T(from: _PXFSingleValueDecoder(
+                    value: PXF.ListVal(pos: PXF.Position(line: 0, column: 0),
+                                       elements: paths.map { PXF.StringVal(pos: PXF.Position(line: 0, column: 0), value: $0) }),
+                    codingPath: codingPath + [k]))
+            }
 
             let e = try getEntry(k)
             

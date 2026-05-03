@@ -31,9 +31,14 @@ extension PXF {
             return presentFields.contains(path) && !nullFields.contains(path)
         }
 
-        /// Returns the paths of all fields explicitly set to null.
+        /// Returns the paths of all fields explicitly set to null, sorted.
         public var allNullFields: [String] {
-            return Array(nullFields)
+            return nullFields.sorted()
+        }
+
+        /// All paths with a concrete (non-null) value, sorted.
+        public var allSetFields: [String] {
+            return presentFields.subtracting(nullFields).sorted()
         }
     }
 }
