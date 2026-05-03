@@ -221,21 +221,57 @@ public enum PXF {
 
         private func lexString(_ pos: Position) -> Token {
             advance() // "
-            var val = ""
+            var bytes: [UInt8] = []
             while self.pos < input.count {
-                let ch = peek()
-                if ch == 34 { // "
-                    advance()
-                    break
+                let ch = advance()
+                if ch == 0x22 { // "
+                    let val = String(decoding: bytes, as: UTF8.self)
+                    return Token(kind: .string, value: val, pos: pos)
                 }
-                if ch == 92 { // \
-                    advance()
-                    val.append(lexEscape())
-                } else {
-                    val.append(Character(UnicodeScalar(advance())))
+                if ch != 0x5C { // \
+                    bytes.append(ch)
+                    continue
+                }
+                if self.pos >= input.count {
+                    return Token(kind: .error, value: "unterminated escape sequence", pos: pos)
+                }
+                let esc = advance()
+                switch esc {
+                case 0x22, 0x5C, 0x27, 0x3F: // " \ ' ?
+                    bytes.append(esc)
+                case 0x61: bytes.append(0x07) // \a
+                case 0x62: bytes.append(0x08) // \b
+                case 0x66: bytes.append(0x0C) // \f
+                case 0x6E: bytes.append(0x0A) // \n
+                case 0x72: bytes.append(0x0D) // \r
+                case 0x74: bytes.append(0x09) // \t
+                case 0x76: bytes.append(0x0B) // \v
+                case 0x78: // \xHH
+                    guard let b = readHexByte() else {
+                        return Token(kind: .error, value: #"invalid \x escape: expected 2 hex digits"#, pos: pos)
+                    }
+                    bytes.append(b)
+                case 0x30, 0x31, 0x32, 0x33: // \nnn (leading 0-3 keeps it within a byte)
+                    guard let b = readOctRest(first: esc) else {
+                        return Token(kind: .error, value: "invalid octal escape: expected 3 octal digits", pos: pos)
+                    }
+                    bytes.append(b)
+                case 0x75: // \uHHHH
+                    guard let scalar = readHexRune(4) else {
+                        return Token(kind: .error, value: #"invalid \u escape: expected 4 hex digits forming a valid codepoint"#, pos: pos)
+                    }
+                    appendUTF8(scalar, to: &bytes)
+                case 0x55: // \UHHHHHHHH
+                    guard let scalar = readHexRune(8) else {
+                        return Token(kind: .error, value: #"invalid \U escape: expected 8 hex digits forming a valid codepoint"#, pos: pos)
+                    }
+                    appendUTF8(scalar, to: &bytes)
+                default:
+                    let escStr = String(decoding: [esc], as: UTF8.self)
+                    return Token(kind: .error, value: "unknown escape sequence \\\(escStr)", pos: pos)
                 }
             }
-            return Token(kind: .string, value: val, pos: pos)
+            return Token(kind: .error, value: "unterminated string", pos: pos)
         }
 
         private func lexTripleString(_ pos: Position) -> Token {
@@ -270,16 +306,62 @@ public enum PXF {
             return Token(kind: .bytes, value: val, pos: pos)
         }
 
-        private func lexEscape() -> Character {
-            let ch = advance()
-            switch ch {
-            case 110: return "\n"
-            case 114: return "\r"
-            case 116: return "\t"
-            case 34: return "\""
-            case 92: return "\\"
-            default: return Character(UnicodeScalar(ch))
+        // MARK: - Escape helpers
+
+        /// Reads exactly two hex digits and returns the assembled byte.
+        private func readHexByte() -> UInt8? {
+            guard pos + 1 < input.count,
+                  let hi = Self.hexVal(input[pos]),
+                  let lo = Self.hexVal(input[pos + 1]) else {
+                return nil
             }
+            advance(); advance()
+            return UInt8(hi << 4 | lo)
+        }
+
+        /// Reads exactly `n` hex digits and returns the assembled Unicode scalar.
+        /// Validity (range, surrogates) is checked here.
+        private func readHexRune(_ n: Int) -> Unicode.Scalar? {
+            guard pos + n <= input.count else { return nil }
+            var value: UInt32 = 0
+            for _ in 0..<n {
+                guard let v = Self.hexVal(input[pos]) else { return nil }
+                value = value << 4 | UInt32(v)
+                advance()
+            }
+            return Unicode.Scalar(value)
+        }
+
+        /// Reads two more octal digits after the leading one already consumed
+        /// (\nnn — exactly 3 octal digits). The caller restricts `first` to 0-3
+        /// so the resulting byte cannot overflow.
+        private func readOctRest(first: UInt8) -> UInt8? {
+            guard pos + 1 < input.count,
+                  let d1 = Self.octVal(input[pos]),
+                  let d2 = Self.octVal(input[pos + 1]) else {
+                return nil
+            }
+            advance(); advance()
+            return UInt8((Int(first) - 0x30) << 6 | d1 << 3 | d2)
+        }
+
+        private func appendUTF8(_ scalar: Unicode.Scalar, to bytes: inout [UInt8]) {
+            for byte in String(scalar).utf8 {
+                bytes.append(byte)
+            }
+        }
+
+        private static func hexVal(_ ch: UInt8) -> Int? {
+            switch ch {
+            case 0x30...0x39: return Int(ch - 0x30)         // 0-9
+            case 0x61...0x66: return Int(ch - 0x61) + 10    // a-f
+            case 0x41...0x46: return Int(ch - 0x41) + 10    // A-F
+            default: return nil
+            }
+        }
+
+        private static func octVal(_ ch: UInt8) -> Int? {
+            (ch >= 0x30 && ch <= 0x37) ? Int(ch - 0x30) : nil
         }
 
         private func lexDirective(_ pos: Position) -> Token {

@@ -6,6 +6,39 @@ public final class PXFEncoder {
 
     public init() {}
 
+    /// Returns a PXF-quoted version of `s` — wraps it in double quotes and
+    /// escapes `\"`, `\\`, `\n`, `\r`, `\t`, plus emits `\xHH` for control
+    /// bytes < 0x20. Code units >= 0x20 pass through literally so valid UTF-8
+    /// stays UTF-8.
+    ///
+    /// Mirrors `writeQuotedString` in `protowire-go/encoding/pxf/encode.go`.
+    public static func quote(_ s: String) -> String {
+        // Hex digits as ASCII bytes — used to encode `\xHH` for control bytes.
+        let hex: [UInt8] = Array("0123456789abcdef".utf8)
+        var bytes: [UInt8] = [0x22] // "
+        for b in s.utf8 {
+            switch b {
+            case 0x22: bytes.append(contentsOf: [0x5C, 0x22]) // \"
+            case 0x5C: bytes.append(contentsOf: [0x5C, 0x5C]) // \\
+            case 0x0A: bytes.append(contentsOf: [0x5C, 0x6E]) // \n
+            case 0x0D: bytes.append(contentsOf: [0x5C, 0x72]) // \r
+            case 0x09: bytes.append(contentsOf: [0x5C, 0x74]) // \t
+            default:
+                if b < 0x20 {
+                    bytes.append(contentsOf: [0x5C, 0x78,    // \x
+                                              hex[Int(b >> 4)],
+                                              hex[Int(b & 0xF)]])
+                } else {
+                    // Pass UTF-8 bytes through verbatim so multibyte
+                    // sequences (e.g. `é`, `µ`) survive intact.
+                    bytes.append(b)
+                }
+            }
+        }
+        bytes.append(0x22) // "
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
     public func encode<T: Encodable>(_ value: T) throws -> String {
         let encoder = _PXFEncoder(indent: indent, emitDefaults: emitDefaults)
         try value.encode(to: encoder)
@@ -75,7 +108,7 @@ private final class _PXFEncoder: Swift.Encoder {
 
         mutating func encode(_ value: String, forKey key: Key) throws {
             writeIndent()
-            encoder.output += "\(key.stringValue) = \"\(escape(value))\"\n"
+            encoder.output += "\(key.stringValue) = \(PXFEncoder.quote(value))\n"
         }
 
         mutating func encode(_ value: Int, forKey key: Key) throws { try encodeNumber(value, forKey: key) }
@@ -159,9 +192,11 @@ private final class _PXFEncoder: Swift.Encoder {
                 writeIndent()
                 encoder.output += "\(key.stringValue) = {\n"
                 
-                // Emit nulls from FieldMask
+                // Emit nulls from FieldMask. The sub-encoder's children already
+                // write at sub.codingPath.count indents; level: 0 keeps these
+                // null lines at the same depth as those children.
                 for nf in nullFields {
-                    sub.writeIndent(level: 1)
+                    sub.writeIndent(level: 0)
                     sub.output += "\(nf) = null\n"
                 }
                 
@@ -197,10 +232,6 @@ private final class _PXFEncoder: Swift.Encoder {
             }
         }
 
-        private func escape(_ s: String) -> String {
-            return s.replacingOccurrences(of: "\"", with: "\\\"")
-        }
-
         mutating func nestedContainer<NestedKey>(keyedBy keyType: NestedKey.Type, forKey key: Key) -> KeyedEncodingContainer<NestedKey> where NestedKey: CodingKey { fatalError() }
         mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer { fatalError() }
         mutating func superEncoder() -> any Swift.Encoder { encoder }
@@ -214,7 +245,7 @@ private final class _PXFEncoder: Swift.Encoder {
 
         mutating func encodeNil() throws { addComma(); encoder.output += "null" }
         mutating func encode(_ value: Bool) throws { addComma(); encoder.output += "\(value)" }
-        mutating func encode(_ value: String) throws { addComma(); encoder.output += "\"\(escape(value))\"" }
+        mutating func encode(_ value: String) throws { addComma(); encoder.output += PXFEncoder.quote(value) }
         mutating func encode(_ value: Int) throws { addComma(); encoder.output += "\(value)" }
         mutating func encode(_ value: Int8) throws { addComma(); encoder.output += "\(value)" }
         mutating func encode(_ value: Int16) throws { addComma(); encoder.output += "\(value)" }
@@ -262,10 +293,6 @@ private final class _PXFEncoder: Swift.Encoder {
             count += 1
         }
 
-        private func escape(_ s: String) -> String {
-            return s.replacingOccurrences(of: "\"", with: "\\\"")
-        }
-
         mutating func nestedContainer<NestedKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> where NestedKey: CodingKey { fatalError() }
         mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer { fatalError() }
         mutating func superEncoder() -> any Swift.Encoder { encoder }
@@ -281,7 +308,7 @@ private final class _PXFEncoder: Swift.Encoder {
 extension _PXFEncoder: SingleValueEncodingContainer {
     func encodeNil() throws { isSingleValue = true; output += "null" }
     func encode(_ value: Bool) throws { isSingleValue = true; output += "\(value)" }
-    func encode(_ value: String) throws { isSingleValue = true; output += "\"\(value)\"" }
+    func encode(_ value: String) throws { isSingleValue = true; output += PXFEncoder.quote(value) }
     func encode(_ value: Double) throws { isSingleValue = true; output += "\(value)" }
     func encode(_ value: Float) throws { isSingleValue = true; output += "\(value)" }
     func encode(_ value: Int) throws { isSingleValue = true; output += "\(value)" }

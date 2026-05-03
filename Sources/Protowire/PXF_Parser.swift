@@ -182,8 +182,7 @@ extension PXF {
                 advance()
                 return v
             case .duration:
-                // Simple duration parser (supports s, ms, us, ns, m, h)
-                guard let dur = parseDuration(current.value) else {
+                guard let dur = Parser.parseDuration(current.value) else {
                     throw ParserError.invalidDuration(pos, current.value)
                 }
                 let v = DurationVal(pos: pos, value: dur, raw: current.value)
@@ -230,30 +229,70 @@ extension PXF {
             return entries
         }
 
-        private func parseDuration(_ s: String) -> TimeInterval? {
-            // Simple implementation for now. Go's time.ParseDuration is more complex.
-            let units: [String: TimeInterval] = ["h": 3600, "m": 60, "s": 1, "ms": 0.001, "us": 0.000001, "ns": 0.000000001]
+        /// Parses a Go-style duration string into a `TimeInterval` (seconds).
+        ///
+        /// Accepts an optional leading sign followed by one or more
+        /// `<number><unit>` segments where unit ∈ `ns`, `us` (or `µs`), `ms`,
+        /// `s`, `m`, `h`. Numbers may be fractional. Examples: `300ms`,
+        /// `-1.5h`, `2h45m`, `1h30m45.5s`.
+        ///
+        /// Mirrors Go's `time.ParseDuration`.
+        static func parseDuration(_ s: String) -> TimeInterval? {
+            if s.isEmpty { return nil }
+            let scalars = Array(s.unicodeScalars)
+            var i = 0
+            var sign: TimeInterval = 1
+
+            if scalars[i] == "-" { sign = -1; i += 1 }
+            else if scalars[i] == "+" { i += 1 }
+            if i >= scalars.count { return nil }
+
+            // "0" alone is a valid zero duration.
+            if i + 1 == scalars.count && scalars[i] == "0" { return 0 }
+
             var total: TimeInterval = 0
-            var currentNum = ""
-            var i = s.startIndex
-            while i < s.endIndex {
-                let c = s[i]
-                if c.isNumber || c == "." || c == "-" {
-                    currentNum.append(c)
-                    i = s.index(after: i)
-                } else {
-                    var unit = String(c)
-                    i = s.index(after: i)
-                    if i < s.endIndex && !s[i].isNumber {
-                        unit.append(s[i])
-                        i = s.index(after: i)
-                    }
-                    guard let n = Double(currentNum), let u = units[unit] else { return nil }
-                    total += n * u
-                    currentNum = ""
+            while i < scalars.count {
+                // Parse leading integer digits and optional fractional part.
+                let numStart = i
+                while i < scalars.count, scalars[i].value >= 0x30, scalars[i].value <= 0x39 {
+                    i += 1
                 }
+                if i < scalars.count, scalars[i] == "." {
+                    i += 1
+                    while i < scalars.count, scalars[i].value >= 0x30, scalars[i].value <= 0x39 {
+                        i += 1
+                    }
+                }
+                if i == numStart { return nil }
+                guard let n = Double(String(String.UnicodeScalarView(scalars[numStart..<i]))) else {
+                    return nil
+                }
+
+                // Parse 1- or 2-character ASCII unit, or `µs` (two scalars).
+                let unitStart = i
+                while i < scalars.count, isUnitScalar(scalars[i]) {
+                    i += 1
+                }
+                if i == unitStart { return nil }
+                let unit = String(String.UnicodeScalarView(scalars[unitStart..<i]))
+
+                let multiplier: TimeInterval
+                switch unit {
+                case "ns": multiplier = 1e-9
+                case "us", "µs": multiplier = 1e-6
+                case "ms": multiplier = 1e-3
+                case "s":  multiplier = 1
+                case "m":  multiplier = 60
+                case "h":  multiplier = 3600
+                default: return nil
+                }
+                total += n * multiplier
             }
-            return total
+            return sign * total
+        }
+
+        private static func isUnitScalar(_ s: Unicode.Scalar) -> Bool {
+            (s.value >= 0x61 && s.value <= 0x7A) || s == "µ"
         }
     }
 }
