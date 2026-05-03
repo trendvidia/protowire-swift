@@ -31,7 +31,7 @@ extension Dictionary: _PBMap where Key: Decodable, Value: Decodable {
 // MARK: - Encoder
 
 /// An encoder that serializes `Encodable` types into Protobuf binary format.
-public class PBEncoder {
+public final class PBEncoder {
     /// Initializes a new `PBEncoder`.
     public init() {}
     
@@ -42,7 +42,7 @@ public class PBEncoder {
     public func encode<T: Encodable>(_ v: T) throws -> Data { let e = _PBEncoder(); try v.encode(to: e); return e.data }
 }
 
-private class _PBEncoder: Encoder {
+private final class _PBEncoder: Encoder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]; var data = Data()
     func container<K>(keyedBy t: K.Type) -> KeyedEncodingContainer<K> { return KeyedEncodingContainer(KeyedContainer<K>(encoder: self)) }
     func unkeyedContainer() -> UnkeyedEncodingContainer { fatalError() }
@@ -124,7 +124,10 @@ private class _PBEncoder: Encoder {
     struct UnkeyedContainer: UnkeyedEncodingContainer {
         var encoder: _PBEncoder; var codingPath: [CodingKey] = []; var count: Int = 0
         mutating func encodeNil() throws {}
-        mutating func encode<T: Encodable>(_ v: T) throws { fatalError() }
+        mutating func encode<T: Encodable>(_ v: T) throws {
+            throw EncodingError.invalidValue(v, .init(codingPath: codingPath,
+                debugDescription: "PB: top-level unkeyed encoding is not supported"))
+        }
         mutating func nestedContainer<N: CodingKey>(keyedBy t: N.Type) -> KeyedEncodingContainer<N> { fatalError() }
         mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer { fatalError() }
         mutating func superEncoder() -> Encoder { encoder }
@@ -152,7 +155,7 @@ extension _PBEncoder: SingleValueEncodingContainer {
 // MARK: - Decoder
 
 /// A decoder that deserializes `Decodable` types from Protobuf binary format.
-public class PBDecoder {
+public final class PBDecoder {
     /// Initializes a new `PBDecoder`.
     public init() {}
     
@@ -165,7 +168,7 @@ public class PBDecoder {
     public func decode<T: Decodable>(_ t: T.Type, from d: Data) throws -> T { return try T(from: _PBDecoder(data: d)) }
 }
 
-private class _PBDecoder: Decoder {
+private final class _PBDecoder: Decoder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]
     let data: Data; private var _fields: [Int32: [Data]]?
 
@@ -185,7 +188,10 @@ private class _PBDecoder: Decoder {
     }
 
     func container<K>(keyedBy t: K.Type) -> KeyedDecodingContainer<K> { return KeyedDecodingContainer(KeyedContainer<K>(decoder: self)) }
-    func unkeyedContainer() throws -> UnkeyedDecodingContainer { fatalError() }
+    func unkeyedContainer() throws -> UnkeyedDecodingContainer {
+        throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+            debugDescription: "PB: top-level unkeyed decoding is not supported"))
+    }
     func singleValueContainer() throws -> SingleValueDecodingContainer { return self }
 
     func decodeAny(_ type: Any.Type, from data: Data) throws -> Any {
@@ -209,21 +215,11 @@ private class _PBDecoder: Decoder {
             if let (bytes, n) = Protowire.consumeBytes(data) {
                 return (try decType.init(from: _PBDecoder(data: bytes)), n)
             }
-            if let (v, n) = Protowire.consumeVarint(data) {
+            if let (_, n) = Protowire.consumeVarint(data) {
                 return (try decType.init(from: _PBDecoder(data: data.prefix(n))), n)
             }
         }
         return nil
-    }
-
-    private func _decode(_ type: Any.Type, from data: Data) throws -> Any {
-        if let t = type as? String.Type { return String(data: data, encoding: .utf8) ?? "" }
-        if let t = type as? Data.Type { return data }
-        if let t = type as? Bool.Type { return (Protowire.consumeVarint(data)?.value ?? 0) != 0 }
-        if let decType = type as? Decodable.Type {
-            return try decType.init(from: _PBDecoder(data: data))
-        }
-        throw PB.Error.corruptData
     }
 
     struct KeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
@@ -283,8 +279,14 @@ private class _PBDecoder: Decoder {
         }
 
         func getData(_ k: Key) throws -> Data { guard let n = k.intValue else { throw PB.Error.corruptData }; return try decoder.getData(tag: Int32(n)) }
-        func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> { fatalError() }
-        func nestedUnkeyedContainer(forKey k: Key) throws -> UnkeyedDecodingContainer { fatalError() }
+        func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
+                debugDescription: "PB: nested keyed containers are decoded inline; this entry point is unused"))
+        }
+        func nestedUnkeyedContainer(forKey k: Key) throws -> UnkeyedDecodingContainer {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
+                debugDescription: "PB: nested unkeyed containers are decoded inline; this entry point is unused"))
+        }
         func superDecoder() throws -> Decoder { decoder }
         func superDecoder(forKey k: Key) throws -> Decoder { decoder }
     }

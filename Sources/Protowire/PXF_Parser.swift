@@ -42,7 +42,7 @@ extension PXF {
     }
 
     /// A parser that transforms tokens into a PXF document AST.
-    public class Parser {
+    public final class Parser {
         private let lexer: Lexer
         private var current: Token
         private var comments: [Comment] = []

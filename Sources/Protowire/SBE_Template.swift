@@ -44,7 +44,7 @@ extension SBE {
     }
 
     /// A template for an SBE message.
-    public class MessageTemplate {
+    public final class MessageTemplate {
         /// The template ID.
         public var templateID: UInt16
         /// The schema ID.

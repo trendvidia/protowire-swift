@@ -65,7 +65,7 @@ public enum PXF {
     }
 
     /// A lexer that scans PXF input and produces tokens.
-    public class Lexer {
+    public final class Lexer {
         private let input: Data
         private var pos: Int = 0
         private var line: Int = 1

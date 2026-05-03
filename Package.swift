@@ -1,5 +1,12 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 5.10
 import PackageDescription
+
+let sharedSwiftSettings: [SwiftSetting] = [
+    .enableUpcomingFeature("ConciseMagicFile"),
+    .enableUpcomingFeature("ForwardTrailingClosures"),
+    .enableUpcomingFeature("BareSlashRegexLiterals"),
+    .unsafeFlags(["-warnings-as-errors"]),
+]
 
 let package = Package(
     name: "Protowire",
@@ -13,16 +20,18 @@ let package = Package(
             targets: ["Protowire"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.26.0"),
+        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.37.0"),
     ],
     targets: [
         .target(
             name: "Protowire",
             dependencies: [
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-            ]),
+            ],
+            swiftSettings: sharedSwiftSettings),
         .testTarget(
             name: "ProtowireTests",
-            dependencies: ["Protowire"]),
+            dependencies: ["Protowire"],
+            swiftSettings: sharedSwiftSettings),
     ]
 )

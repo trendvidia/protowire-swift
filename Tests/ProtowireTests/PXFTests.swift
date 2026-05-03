@@ -2,7 +2,7 @@ import XCTest
 import SwiftProtobuf
 @testable import Protowire
 
-extension Google_Protobuf_Any: Codable {
+extension Google_Protobuf_Any: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -20,7 +20,7 @@ extension Google_Protobuf_Any: Codable {
     }
 }
 
-extension Google_Protobuf_Struct: Codable {
+extension Google_Protobuf_Struct: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
         let container = try decoder.container(keyedBy: DynamicKey.self)
@@ -37,7 +37,7 @@ extension Google_Protobuf_Struct: Codable {
     }
 }
 
-extension Google_Protobuf_Value: Codable {
+extension Google_Protobuf_Value: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
         let container = try decoder.singleValueContainer()
@@ -62,7 +62,7 @@ extension Google_Protobuf_Value: Codable {
     }
 }
 
-extension Google_Protobuf_ListValue: Codable {
+extension Google_Protobuf_ListValue: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
         var container = try decoder.unkeyedContainer()
@@ -77,7 +77,7 @@ extension Google_Protobuf_ListValue: Codable {
     }
 }
 
-extension Google_Protobuf_FieldMask: Codable {
+extension Google_Protobuf_FieldMask: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
         if let container = try? decoder.singleValueContainer(), let s = try? container.decode(String.self) {

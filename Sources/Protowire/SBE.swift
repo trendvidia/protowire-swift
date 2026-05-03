@@ -68,10 +68,10 @@ public enum SBE {
     ///   - buffer: The buffer to write to.
     ///   - header: The header to encode.
     public static func writeHeader(_ buffer: inout Data, _ header: MessageHeader) {
-        var bl = header.blockLength.littleEndian
-        var tid = header.templateID.littleEndian
-        var sid = header.schemaID.littleEndian
-        var ver = header.version.littleEndian
+        let bl = header.blockLength.littleEndian
+        let tid = header.templateID.littleEndian
+        let sid = header.schemaID.littleEndian
+        let ver = header.version.littleEndian
         withUnsafeBytes(of: bl) { buffer.append(contentsOf: $0) }
         withUnsafeBytes(of: tid) { buffer.append(contentsOf: $0) }
         withUnsafeBytes(of: sid) { buffer.append(contentsOf: $0) }

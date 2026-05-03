@@ -1,7 +1,7 @@
 import Foundation
 
 /// A marshaller that encodes dictionary-based values into SBE binary format.
-public class SBEMarshaller {
+public final class SBEMarshaller {
     /// Initializes a new `SBEMarshaller`.
     public init() {}
 
@@ -88,7 +88,7 @@ public class SBEMarshaller {
 }
 
 /// An unmarshaller that decodes SBE binary data into dictionary-based values.
-public class SBEUnmarshaller {
+public final class SBEUnmarshaller {
     /// Initializes a new `SBEUnmarshaller`.
     public init() {}
     

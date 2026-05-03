@@ -1,6 +1,6 @@
 version: v2
 plugins:
-  - remote: buf.build/apple/swift:v1.26.0
+  - remote: buf.build/apple/swift:v1.37.0
     out: Sources/Protowire
     opt:
       - Visibility=Public

@@ -10,7 +10,7 @@ struct PXFKey: CodingKey {
 }
 
 /// A decoder that deserializes `Decodable` types from PXF format.
-public class PXFDecoder {
+public final class PXFDecoder {
     /// An optional type resolver to handle `@type` directives (e.g., for `google.protobuf.Any`).
     public var typeResolver: PXF.TypeResolver?
     
@@ -72,7 +72,7 @@ public class PXFDecoder {
     }
 }
 
-private class _PXFDecoder: Swift.Decoder {
+private final class _PXFDecoder: Swift.Decoder {
     var codingPath: [CodingKey] = []
     var userInfo: [CodingUserInfoKey: Any] = [:]
     let entries: [PXF.Entry]
@@ -90,8 +90,14 @@ private class _PXFDecoder: Swift.Decoder {
         return KeyedDecodingContainer(KeyedContainer<Key>(decoder: self))
     }
 
-    func unkeyedContainer() throws -> UnkeyedDecodingContainer { fatalError() }
-    func singleValueContainer() throws -> SingleValueDecodingContainer { fatalError() }
+    func unkeyedContainer() throws -> UnkeyedDecodingContainer {
+        throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+            debugDescription: "PXF: cannot decode top-level message as unkeyed container"))
+    }
+    func singleValueContainer() throws -> SingleValueDecodingContainer {
+        throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+            debugDescription: "PXF: cannot decode top-level message as single value"))
+    }
 
     struct KeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
         var decoder: _PXFDecoder
@@ -195,14 +201,20 @@ private class _PXFDecoder: Swift.Decoder {
         private func getValue(_ k: Key) throws -> PXF.Value { let e = try getEntry(k); if let a = e as? PXF.Assignment { return a.value } else if let m = e as? PXF.MapEntry { return m.value } else { throw DecodingError.typeMismatch(PXF.Value.self, .init(codingPath: codingPath, debugDescription: "")) } }
 
         func decodeIfPresent<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? { guard contains(k) else { return nil }; if try decodeNil(forKey: k) { return nil }; return try decode(t, forKey: k) }
-        func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> { fatalError() }
-        func nestedUnkeyedContainer(forKey k: Key) throws -> UnkeyedDecodingContainer { fatalError() }
+        func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
+                debugDescription: "PXF: nested keyed containers are decoded via decode<T>; this entry point is unused"))
+        }
+        func nestedUnkeyedContainer(forKey k: Key) throws -> UnkeyedDecodingContainer {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
+                debugDescription: "PXF: nested unkeyed containers are decoded via decode<T>; this entry point is unused"))
+        }
         func superDecoder() throws -> Swift.Decoder { decoder }
         func superDecoder(forKey k: Key) throws -> Swift.Decoder { decoder }
     }
 }
 
-private class _PXFUnkeyedDecoder: Swift.Decoder {
+private final class _PXFUnkeyedDecoder: Swift.Decoder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]
     let elements: [PXF.Value]
     private var result: UnsafeMutablePointer<PXF.Result>?
@@ -254,8 +266,14 @@ private class _PXFUnkeyedDecoder: Swift.Decoder {
             currentIndex += 1; return try T(from: _PXFSingleValueDecoder(value: v, codingPath: codingPath + [PXFKey(index: currentIndex - 1)]))
         }
         private func current() throws -> PXF.Value { guard currentIndex < decoder.elements.count else { throw DecodingError.valueNotFound(PXF.Value.self, .init(codingPath: codingPath, debugDescription: "")) }; return decoder.elements[currentIndex] }
-        mutating func nestedContainer<N: CodingKey>(keyedBy t: N.Type) throws -> KeyedDecodingContainer<N> { fatalError() }
-        mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer { fatalError() }
+        mutating func nestedContainer<N: CodingKey>(keyedBy t: N.Type) throws -> KeyedDecodingContainer<N> {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+                debugDescription: "PXF: nested keyed containers within lists are decoded via decode<T>; this entry point is unused"))
+        }
+        mutating func nestedUnkeyedContainer() throws -> UnkeyedDecodingContainer {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+                debugDescription: "PXF: nested unkeyed containers within lists are decoded via decode<T>; this entry point is unused"))
+        }
         func superDecoder() throws -> Swift.Decoder { decoder }
     }
 }
@@ -279,7 +297,7 @@ extension _PXFUnkeyedDecoder: SingleValueDecodingContainer {
     func decode<T: Decodable>(_ t: T.Type) throws -> T { return try T(from: self) }
 }
 
-private class _PXFSingleValueDecoder: Swift.Decoder {
+private final class _PXFSingleValueDecoder: Swift.Decoder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]; let value: PXF.Value
     init(value: PXF.Value, codingPath: [CodingKey] = []) { self.value = value; self.codingPath = codingPath }
     
@@ -334,13 +352,22 @@ private class _PXFSingleValueDecoder: Swift.Decoder {
             return try decoder.decode(t)
         }
         
-        func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> { fatalError() }
-        func nestedUnkeyedContainer(forKey k: Key) throws -> UnkeyedDecodingContainer { fatalError() }
+        func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
+                debugDescription: "PXF: wrapper sugar does not support nested keyed containers"))
+        }
+        func nestedUnkeyedContainer(forKey k: Key) throws -> UnkeyedDecodingContainer {
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
+                debugDescription: "PXF: wrapper sugar does not support nested unkeyed containers"))
+        }
         func superDecoder() throws -> Swift.Decoder { decoder }
         func superDecoder(forKey k: Key) throws -> Swift.Decoder { decoder }
     }
 
-    func unkeyedContainer() throws -> UnkeyedDecodingContainer { fatalError() }
+    func unkeyedContainer() throws -> UnkeyedDecodingContainer {
+        throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+            debugDescription: "PXF: single value cannot be decoded as unkeyed container"))
+    }
     func singleValueContainer() throws -> SingleValueDecodingContainer { return self }
 }
 

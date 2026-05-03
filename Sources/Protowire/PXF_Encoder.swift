@@ -1,6 +1,6 @@
 import Foundation
 
-public class PXFEncoder {
+public final class PXFEncoder {
     public var indent: String = "  "
     public var emitDefaults: Bool = false
 
@@ -33,7 +33,7 @@ public class PXFEncoder {
     }
 }
 
-private class _PXFEncoder: Swift.Encoder {
+private final class _PXFEncoder: Swift.Encoder {
     var codingPath: [CodingKey] = []
     var userInfo: [CodingUserInfoKey: Any] = [:]
     var output: String = ""
