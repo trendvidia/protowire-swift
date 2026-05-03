@@ -33,5 +33,17 @@ let package = Package(
             name: "ProtowireTests",
             dependencies: ["Protowire"],
             swiftSettings: sharedSwiftSettings),
+        // Cross-port harness binaries. These produce JSON output the spec
+        // repo's `scripts/cross_*_bench.sh` aggregates.
+        .executableTarget(
+            name: "dump-envelope",
+            dependencies: ["Protowire"],
+            path: "cmd/dump-envelope",
+            swiftSettings: sharedSwiftSettings),
+        .executableTarget(
+            name: "bench-pxf",
+            dependencies: ["Protowire"],
+            path: "cmd/bench-pxf",
+            swiftSettings: sharedSwiftSettings),
     ]
 )
