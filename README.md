@@ -193,6 +193,24 @@ Generated files are located in `Sources/Protowire/*.pb.swift`.
 - `Sources/Protowire/Envelope.swift`: API Response Envelope implementation.
 - `proto/`: Original Protobuf schemas.
 
+## Limitations & open gaps
+
+Built on Apple's [`swift-protobuf`](https://github.com/apple/swift-protobuf) — the Swift Codable bridge is the user-facing API, with a parallel SwiftProtobuf-Message-driven path layered on for things that need proto descriptors. A few items fall out of that or are deferred:
+
+- **`(pxf.required)` / `(pxf.default)` annotation enforcement is not yet implemented.** Unlike `Google.Protobuf` (C#) or the Dart `protobuf` package, swift-protobuf doesn't expose a runtime reflection API comparable to `IFieldAccessor` — its design is codegen-driven, with each generated message type carrying hand-written `traverse` / `decodeMessage` methods rather than a generic descriptor walk. Closing the gap means either (a) building a Swift descriptor reflection layer on top of `Google_Protobuf_FileDescriptorProto` / `FieldOptions`, or (b) introducing a marker protocol (`PXFAnnotated`) that Codable types opt into to declare required/default field metadata.
+- **No descriptor-driven SBE codec.** The current SBE codec is dictionary-template-driven (users hand-build `SBE.MessageTemplate` instances). Go / C++ / Rust / Java / C# all build the template from `(sbe.template_id)` / `(sbe.length)` / `(sbe.encoding)` annotations on a proto file at runtime; Swift doesn't.
+- **The cross-port `bench-sbe` harness is not shipped.** It depends on the descriptor-driven SBE codec above to land first, since the canonical 94-byte fixture layout is computed from annotations.
+- **Wrapper sugar is name-gated, not heuristic.** `PXFEncoder` only inlines `field = innerValue` for the nine SwiftProtobuf-generated `Google_Protobuf_*Value` types. A user struct with one `value` field is emitted as a regular nested block. (This is a feature, not a gap, but worth knowing.)
+- **No standalone Swift CLI.** The shared CLI lives in [trendvidia/protowire/cmd/protowire](https://github.com/trendvidia/protowire/tree/main/cmd/protowire); Swift users invoke it as a binary.
+
+## Contributing & governance
+
+This repository is part of the `protowire-*` family and is governed by [**Steward**](https://github.com/trendvidia/steward) — the meritocratic, AI-driven governance engine that runs all of the ports. Voting weight is per-directory expertise, the constitution is public in [`governance.pxf`](https://github.com/trendvidia/steward/blob/main/governance.pxf), and Steward routes draft / first-time PRs through a [private mentorship pipeline](https://github.com/trendvidia/steward#-private-mentorship-mode) so initial contributions get private feedback rather than public-review friction.
+
+If any of the items above sound interesting, pull requests are welcome. New contributors start at zero trust and accumulate influence by shipping merged PRs in the directories they actually work on — the [escrow pipeline](https://github.com/trendvidia/steward#%EF%B8%8F-the-escrow-pipeline-zero-trust-onboarding) auto-routes large first-time PRs through 2–3 sandbox issues before unlocking them for community review.
+
+See the [Steward README](https://github.com/trendvidia/steward) for a longer walkthrough of vector reputation, escrow, and the immune system.
+
 ## License
 
 This project is licensed under the MIT License.
