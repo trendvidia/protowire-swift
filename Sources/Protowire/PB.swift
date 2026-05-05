@@ -165,26 +165,64 @@ public final class PBDecoder {
     ///   - d: The data to decode from.
     /// - Returns: The decoded value.
     /// - Throws: An error if decoding fails.
-    public func decode<T: Decodable>(_ t: T.Type, from d: Data) throws -> T { return try T(from: _PBDecoder(data: d)) }
+    public func decode<T: Decodable>(_ t: T.Type, from d: Data) throws -> T {
+        let dec = try _PBDecoder(data: d)
+        return try T(from: dec)
+    }
 }
 
 private final class _PBDecoder: Decoder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]
-    let data: Data; private var _fields: [Int32: [Data]]?
+    let data: Data
+    let depth: Int
+    private var _fields: [Int32: [Data]]?
+    private var _fieldsError: Error?
 
-    init(data: Data) { self.data = data }
+    init(data: Data, depth: Int = 0) throws {
+        if depth > Hardening.maxNestingDepth {
+            throw DecoderError.nestingDepthExceeded(depth)
+        }
+        self.data = data
+        self.depth = depth
+    }
 
+    /// Lazily walks the buffer once, caching either the field map or the
+    /// parse error. `fieldsError` exposes the latter so throwing entry points
+    /// can surface truncation rather than silently treating it as "field absent".
     private var fields: [Int32: [Data]] {
         if let f = _fields { return f }
-        var f: [Int32: [Data]] = [:]; var rem = data
-        while !rem.isEmpty {
-            if let (tag, wire, n) = Protowire.consumeTag(rem) {
-                rem = rem.advanced(by: n); let len = consumeFieldValue(tag: tag, wireType: wire, data: rem)
-                if len >= 0 { f[tag, default: []].append(Data(rem.prefix(len))); rem = rem.advanced(by: len) }
-                else { break }
-            } else { break }
+        if _fieldsError != nil { return [:] }
+        do {
+            let f = try Self.parseFields(data)
+            _fields = f
+            return f
+        } catch {
+            _fieldsError = error
+            return [:]
         }
-        _fields = f; return f
+    }
+
+    fileprivate var fieldsError: Error? {
+        _ = fields
+        return _fieldsError
+    }
+
+    private static func parseFields(_ data: Data) throws -> [Int32: [Data]] {
+        var f: [Int32: [Data]] = [:]
+        var rem = data
+        while !rem.isEmpty {
+            guard let (tag, wire, n) = Protowire.consumeTag(rem) else {
+                throw PB.Error.corruptData
+            }
+            rem = rem.advanced(by: n)
+            let len = consumeFieldValue(tag: tag, wireType: wire, data: rem)
+            guard len >= 0 else {
+                throw PB.Error.corruptData
+            }
+            f[tag, default: []].append(Data(rem.prefix(len)))
+            rem = rem.advanced(by: len)
+        }
+        return f
     }
 
     func container<K>(keyedBy t: K.Type) -> KeyedDecodingContainer<K> { return KeyedDecodingContainer(KeyedContainer<K>(decoder: self)) }
@@ -213,10 +251,12 @@ private final class _PBDecoder: Decoder {
         
         if let decType = type as? Decodable.Type {
             if let (bytes, n) = Protowire.consumeBytes(data) {
-                return (try decType.init(from: _PBDecoder(data: bytes)), n)
+                let sub = try _PBDecoder(data: bytes, depth: depth + 1)
+                return (try decType.init(from: sub), n)
             }
             if let (_, n) = Protowire.consumeVarint(data) {
-                return (try decType.init(from: _PBDecoder(data: data.prefix(n))), n)
+                let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1)
+                return (try decType.init(from: sub), n)
             }
         }
         return nil
@@ -224,8 +264,19 @@ private final class _PBDecoder: Decoder {
 
     struct KeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
         var decoder: _PBDecoder; var codingPath: [CodingKey] = []; var allKeys: [Key] { [] }
-        func contains(_ k: Key) -> Bool { guard let n = k.intValue else { return false }; return decoder.fields[Int32(n)] != nil }
-        func decodeNil(forKey k: Key) throws -> Bool { !contains(k) }
+        func contains(_ k: Key) -> Bool {
+            // If the field walker errored on truncated input, route every key through
+            // the throwing decode/decodeNil paths so the error surfaces. Otherwise the
+            // stdlib's default `decodeIfPresent` short-circuits on `!contains(k)`,
+            // silently producing nil for what is actually corrupt data.
+            if decoder.fieldsError != nil { return true }
+            guard let n = k.intValue else { return false }
+            return decoder.fields[Int32(n)] != nil
+        }
+        func decodeNil(forKey k: Key) throws -> Bool {
+            if let err = decoder.fieldsError { throw err }
+            return !contains(k)
+        }
         func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { return try decoder.decodeAny(t, from: try getData(k)) as! Bool }
         func decode(_ t: String.Type, forKey k: Key) throws -> String { return try decoder.decodeAny(t, from: try getData(k)) as! String }
         func decode(_ t: Int.Type, forKey k: Key) throws -> Int { return try decoder.decodeAny(t, from: try getData(k)) as! Int }
@@ -241,9 +292,13 @@ private final class _PBDecoder: Decoder {
         func decode(_ t: Float.Type, forKey k: Key) throws -> Float { return try decoder.decodeAny(t, from: try getData(k)) as! Float }
         func decode(_ t: Double.Type, forKey k: Key) throws -> Double { return try decoder.decodeAny(t, from: try getData(k)) as! Double }
 
-        func decodeIfPresent<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? { return contains(k) ? try decode(t, forKey: k) : nil }
+        func decodeIfPresent<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? {
+            if let err = decoder.fieldsError { throw err }
+            return contains(k) ? try decode(t, forKey: k) : nil
+        }
 
         func decode<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T {
+            if let err = decoder.fieldsError { throw err }
             guard let n = k.intValue, let dl = decoder.fields[Int32(n)] else { throw DecodingError.keyNotFound(k, .init(codingPath: codingPath, debugDescription: "")) }
             if let at = T.self as? _PBArray.Type {
                 var elements: [Any] = []
@@ -268,7 +323,8 @@ private final class _PBDecoder: Decoder {
             if let mt = T.self as? _PBMap.Type {
                 var es: [(Any, Any)] = []
                 for d in dl {
-                    let eb = Protowire.consumeBytes(d)?.value ?? Data(); let sub = _PBDecoder(data: eb)
+                    let eb = Protowire.consumeBytes(d)?.value ?? Data()
+                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1)
                     let key = try sub.decodeAny(mt.keyType, from: try sub.getData(tag: 1))
                     let val = try sub.decodeAny(mt.valueType, from: try sub.getData(tag: 2))
                     es.append((key, val))
@@ -291,7 +347,11 @@ private final class _PBDecoder: Decoder {
         func superDecoder(forKey k: Key) throws -> Decoder { decoder }
     }
 
-    func getData(tag: Int32) throws -> Data { guard let d = fields[tag]?.last else { throw PB.Error.corruptData }; return d }
+    func getData(tag: Int32) throws -> Data {
+        if let err = fieldsError { throw err }
+        guard let d = fields[tag]?.last else { throw PB.Error.corruptData }
+        return d
+    }
 }
 
 extension _PBDecoder: SingleValueDecodingContainer {

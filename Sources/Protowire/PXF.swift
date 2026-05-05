@@ -225,7 +225,9 @@ public enum PXF {
             while self.pos < input.count {
                 let ch = advance()
                 if ch == 0x22 { // "
-                    let val = String(decoding: bytes, as: UTF8.self)
+                    guard let val = String(data: Data(bytes), encoding: .utf8) else {
+                        return Token(kind: .error, value: "invalid UTF-8 in string literal", pos: pos)
+                    }
                     return Token(kind: .string, value: val, pos: pos)
                 }
                 if ch != 0x5C { // \

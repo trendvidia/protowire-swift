@@ -158,8 +158,9 @@ public enum Protowire {
     /// - Returns: A tuple containing the decoded data and the number of bytes consumed, or `nil` if decoding failed.
     public static func consumeBytes(_ data: Data) -> (value: Data, length: Int)? {
         guard let (len, n) = consumeVarint(data) else { return nil }
-        let totalLen = n + Int(len)
-        guard data.count >= totalLen else { return nil }
+        guard let lenInt = Int(exactly: len) else { return nil }
+        let (totalLen, overflow) = n.addingReportingOverflow(lenInt)
+        guard !overflow, data.count >= totalLen else { return nil }
         let start = data.startIndex + n
         let end = data.startIndex + totalLen
         return (data.subdata(in: start..<end), totalLen)
