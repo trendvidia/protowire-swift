@@ -16,8 +16,8 @@ extension SBE {
         /// Initializes a new view from data and a template.
         public init(data: Data, template: MessageTemplate) throws {
             guard data.count >= SBE.headerSize else { throw PB.Error.corruptData }
-            let bl = Int(data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt16.self).littleEndian })
-            let tid = data.withUnsafeBytes { $0.load(fromByteOffset: 2, as: UInt16.self).littleEndian }
+            let bl = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt16.self).littleEndian })
+            let tid = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 2, as: UInt16.self).littleEndian }
             
             guard tid == template.templateID else { throw PB.Error.corruptData }
             guard data.count >= SBE.headerSize + bl else { throw PB.Error.corruptData }
@@ -39,9 +39,9 @@ extension SBE {
             let off = block.startIndex + ft.offset
             switch ft.encoding {
             case .int8:   return Int64(Int8(bitPattern: block[off]))
-            case .int16:  return Int64(block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: Int16.self).littleEndian })
-            case .int32:  return Int64(block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: Int32.self).littleEndian })
-            case .int64:  return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: Int64.self).littleEndian }
+            case .int16:  return Int64(block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: Int16.self).littleEndian })
+            case .int32:  return Int64(block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: Int32.self).littleEndian })
+            case .int64:  return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: Int64.self).littleEndian }
             default:      fatalError("SBE: field \(name) is not a signed integer")
             }
         }
@@ -52,9 +52,9 @@ extension SBE {
             let off = block.startIndex + ft.offset
             switch ft.encoding {
             case .uint8:  return UInt64(block[off])
-            case .uint16: return UInt64(block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt16.self).littleEndian })
-            case .uint32: return UInt64(block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian })
-            case .uint64: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian }
+            case .uint16: return UInt64(block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt16.self).littleEndian })
+            case .uint32: return UInt64(block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian })
+            case .uint64: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian }
             default:      fatalError("SBE: field \(name) is not an unsigned integer")
             }
         }
@@ -64,7 +64,7 @@ extension SBE {
             let ft = getField(name)
             let off = block.startIndex + ft.offset
             guard ft.encoding == .float else { fatalError("SBE: field \(name) is not a float") }
-            return Float(bitPattern: block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian })
+            return Float(bitPattern: block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian })
         }
 
         /// Returns a double value for a field.
@@ -72,7 +72,7 @@ extension SBE {
             let ft = getField(name)
             let off = block.startIndex + ft.offset
             guard ft.encoding == .double else { fatalError("SBE: field \(name) is not a double") }
-            return Double(bitPattern: block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian })
+            return Double(bitPattern: block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian })
         }
 
         /// Returns a boolean value for a field.
@@ -108,8 +108,8 @@ extension SBE {
         public func group(_ name: String) -> GroupView {
             var pos = data.startIndex + SBE.headerSize + block.count
             for gn in schema.groupOrder {
-                let bl = Int(data.withUnsafeBytes { $0.load(fromByteOffset: pos - data.startIndex, as: UInt16.self).littleEndian })
-                let count = Int(data.withUnsafeBytes { $0.load(fromByteOffset: pos + 2 - data.startIndex, as: UInt16.self).littleEndian })
+                let bl = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos - data.startIndex, as: UInt16.self).littleEndian })
+                let count = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos + 2 - data.startIndex, as: UInt16.self).littleEndian })
                 if gn == name {
                     return GroupView(data: data.subdata(in: pos..<data.endIndex), blockLength: bl, count: count, schema: schema.groupMap[name]!)
                 }

@@ -45,5 +45,13 @@ let package = Package(
             dependencies: ["Protowire"],
             path: "cmd/bench-pxf",
             swiftSettings: sharedSwiftSettings),
+        // HARDENING.md M8 conformance corpus driver. The protowire spec repo's
+        // `scripts/cross_security_check.sh` greps for the literal string
+        // `"check-decode"` in this file to gate building this product.
+        .executableTarget(
+            name: "check-decode",
+            dependencies: ["Protowire"],
+            path: "cmd/check-decode",
+            swiftSettings: sharedSwiftSettings),
     ]
 )

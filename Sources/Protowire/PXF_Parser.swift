@@ -138,7 +138,7 @@ extension PXF {
                     throw ParserError.fieldAssignmentRequiresIdentifierKey(pos, got: keyKind, key: key)
                 }
                 advance()
-                let val = try parseValue()
+                let val = try parseValue(depth: depth)
                 return Assignment(pos: pos, key: key, value: val, leadingComments: leading)
             case .colon:
                 // Map entry. Only allowed inside a '{ ... }' block, never at
@@ -147,7 +147,7 @@ extension PXF {
                     throw ParserError.mapEntryNotAllowedAtTopLevel(pos)
                 }
                 advance()
-                let val = try parseValue()
+                let val = try parseValue(depth: depth)
                 return MapEntry(pos: pos, key: key, value: val, leadingComments: leading)
             case .lbrace:
                 // `{ ... }` denotes a submessage field; same identifier-only
@@ -156,14 +156,21 @@ extension PXF {
                     throw ParserError.submessageBlockRequiresIdentifierKey(pos, got: keyKind, key: key)
                 }
                 advance()
-                let entries = try parseBody()
+                try checkDepth(depth + 1)
+                let entries = try parseBody(depth: depth + 1)
                 return Block(pos: pos, name: key, entries: entries, leadingComments: leading)
             default:
                 throw ParserError.expectedEntryDelimiter(current.pos, got: current.kind)
             }
         }
 
-        private func parseValue() throws -> Value {
+        private func checkDepth(_ depth: Int) throws {
+            if depth > Hardening.maxNestingDepth {
+                throw DecoderError.nestingDepthExceeded(depth)
+            }
+        }
+
+        private func parseValue(depth: Int) throws -> Value {
             let pos = current.pos
 
             var typeURL: String?
@@ -226,19 +233,20 @@ extension PXF {
                 advance()
                 return v
             case .lbracket:
-                return try parseList()
+                return try parseList(depth: depth + 1)
             case .lbrace:
-                return try parseBlockVal(typeURL: typeURL)
+                return try parseBlockVal(typeURL: typeURL, depth: depth + 1)
             default:
                 throw ParserError.expectedValue(pos, got: current.kind)
             }
         }
 
-        private func parseList() throws -> Value {
+        private func parseList(depth: Int) throws -> Value {
+            try checkDepth(depth)
             advance() // [
             var elements: [Value] = []
             while current.kind != .rbracket && current.kind != .eof {
-                elements.append(try parseValue())
+                elements.append(try parseValue(depth: depth))
                 if current.kind == .comma { advance() }
             }
             if current.kind != .rbracket { throw ParserError.expectedClosingBracket(current.pos, got: current.kind) }
@@ -246,16 +254,17 @@ extension PXF {
             return ListVal(pos: current.pos, elements: elements)
         }
 
-        private func parseBlockVal(typeURL: String? = nil) throws -> Value {
+        private func parseBlockVal(typeURL: String? = nil, depth: Int) throws -> Value {
+            try checkDepth(depth)
             advance() // {
-            let entries = try parseBody()
+            let entries = try parseBody(depth: depth)
             return BlockVal(pos: current.pos, typeURL: typeURL, entries: entries)
         }
 
-        private func parseBody() throws -> [Entry] {
+        private func parseBody(depth: Int) throws -> [Entry] {
             var entries: [Entry] = []
             while current.kind != .rbrace && current.kind != .eof {
-                entries.append(try parseEntry())
+                entries.append(try parseEntry(depth: depth))
             }
             if current.kind != .rbrace { throw ParserError.expectedClosingBrace(current.pos, got: current.kind) }
             advance()
