@@ -9,6 +9,12 @@ extension PXF {
         case expectedTypeURL(Position, got: TokenKind)
         /// An entry delimiter ('=', ':', or '{') was expected.
         case expectedEntryDelimiter(Position, got: TokenKind)
+        /// A field assignment ('=') had a non-identifier key.
+        case fieldAssignmentRequiresIdentifierKey(Position, got: TokenKind, key: String)
+        /// A submessage block ('{') had a non-identifier key.
+        case submessageBlockRequiresIdentifierKey(Position, got: TokenKind, key: String)
+        /// A map entry (':' form) was used at document top level.
+        case mapEntryNotAllowedAtTopLevel(Position)
         /// A value was expected.
         case expectedValue(Position, got: TokenKind)
         /// A closing bracket ']' was expected.
@@ -30,6 +36,12 @@ extension PXF {
             case .expectedIdentifier(let pos, let got): return "[\(pos)] expected identifier, got \(got.rawValue)"
             case .expectedTypeURL(let pos, let got): return "[\(pos)] expected type URL after @type, got \(got.rawValue)"
             case .expectedEntryDelimiter(let pos, let got): return "[\(pos)] expected '=', ':', or '{', got \(got.rawValue)"
+            case .fieldAssignmentRequiresIdentifierKey(let pos, let got, let key):
+                return "[\(pos)] field assignment with '=' requires an identifier key, got \(got.rawValue) (\"\(key)\"); use ':' for map entries"
+            case .submessageBlockRequiresIdentifierKey(let pos, let got, let key):
+                return "[\(pos)] submessage block requires an identifier key, got \(got.rawValue) (\"\(key)\")"
+            case .mapEntryNotAllowedAtTopLevel(let pos):
+                return "[\(pos)] map entry (':' form) is only allowed inside a '{ … }' block; use '=' for top-level field assignments"
             case .expectedValue(let pos, let got): return "[\(pos)] expected value, got \(got.rawValue)"
             case .expectedClosingBracket(let pos, let got): return "[\(pos)] expected ']', got \(got.rawValue)"
             case .expectedClosingBrace(let pos, let got): return "[\(pos)] expected '}', got \(got.rawValue)"
@@ -95,13 +107,17 @@ extension PXF {
             }
 
             while current.kind != .eof {
-                doc.entries.append(try parseEntry())
+                // Top-level: only field_entry is allowed. The document
+                // represents a proto message, never a map<K,V>; map_entry
+                // (`:` form) is reserved for the inside of a '{ ... }' block.
+                // See docs/grammar.ebnf -> document.
+                doc.entries.append(try parseEntry(allowMapEntry: false))
             }
 
             return doc
         }
 
-        private func parseEntry() throws -> Entry {
+        private func parseEntry(allowMapEntry: Bool = true) throws -> Entry {
             let leading = flushComments()
             let pos = current.pos
 
@@ -109,19 +125,36 @@ extension PXF {
                 throw ParserError.expectedIdentifier(pos, got: current.kind)
             }
 
+            let keyKind = current.kind
             let key = current.value
             advance()
 
             switch current.kind {
             case .equal:
+                // `=` denotes a field assignment on a proto message; the key
+                // must be an identifier. Map-style keys (string / integer)
+                // are only valid with `:`.
+                guard keyKind == .identifier else {
+                    throw ParserError.fieldAssignmentRequiresIdentifierKey(pos, got: keyKind, key: key)
+                }
                 advance()
                 let val = try parseValue()
                 return Assignment(pos: pos, key: key, value: val, leadingComments: leading)
             case .colon:
+                // Map entry. Only allowed inside a '{ ... }' block, never at
+                // document top level.
+                guard allowMapEntry else {
+                    throw ParserError.mapEntryNotAllowedAtTopLevel(pos)
+                }
                 advance()
                 let val = try parseValue()
                 return MapEntry(pos: pos, key: key, value: val, leadingComments: leading)
             case .lbrace:
+                // `{ ... }` denotes a submessage field; same identifier-only
+                // rule as `=` applies.
+                guard keyKind == .identifier else {
+                    throw ParserError.submessageBlockRequiresIdentifierKey(pos, got: keyKind, key: key)
+                }
                 advance()
                 let entries = try parseBody()
                 return Block(pos: pos, name: key, entries: entries, leadingComments: leading)
