@@ -24,7 +24,9 @@ only runtime dependency.
 
 ## Toolchain
 
-Swift 5.10+ (the floor in `Package.swift`'s `swift-tools-version`).
+Swift 6.0+ (the floor in `Package.swift`'s `swift-tools-version`;
+bumped from 5.10 because `swift-protobuf 1.37` declares
+`swift-tools-version: 6.2`, which SPM under Swift 5.10 can't read).
 Tested in CI on:
 
 - Latest Xcode toolchain × macOS
