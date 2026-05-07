@@ -69,5 +69,11 @@ jobs:
           repository: trendvidia/protowire
           path: protowire
 
+      # The swift:* container image is minimal Ubuntu — no python3.
+      # cross_security_check.sh uses python3 to parse the corpus
+      # MANIFEST.jsonl, so install it before running.
+      - name: Install python3
+        run: apt-get update && apt-get install -y --no-install-recommends python3
+
       - name: Run corpus
         run: bash protowire/scripts/cross_security_check.sh

@@ -112,8 +112,8 @@ public final class SBEUnmarshaller {
         var pos = rbEnd
         for gt in template.groups {
             guard pos + SBE.groupHeaderSize <= data.endIndex else { break }
-            let bl = Int(data.withUnsafeBytes { $0.load(fromByteOffset: pos - data.startIndex, as: UInt16.self).littleEndian })
-            let count = Int(data.withUnsafeBytes { $0.load(fromByteOffset: pos + 2 - data.startIndex, as: UInt16.self).littleEndian })
+            let bl = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos - data.startIndex, as: UInt16.self).littleEndian })
+            let count = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos + 2 - data.startIndex, as: UInt16.self).littleEndian })
             pos += SBE.groupHeaderSize
             var list: [[String: Any]] = []
             for _ in 0..<count {
@@ -138,14 +138,14 @@ public final class SBEUnmarshaller {
         switch enc {
         case .int8: return Int8(bitPattern: block[off])
         case .uint8: return block[off]
-        case .int16: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: Int16.self).littleEndian }
-        case .uint16: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt16.self).littleEndian }
-        case .int32: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: Int32.self).littleEndian }
-        case .uint32: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian }
-        case .int64: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: Int64.self).littleEndian }
-        case .uint64: return block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian }
-        case .float: return Float(bitPattern: block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian })
-        case .double: return Double(bitPattern: block.withUnsafeBytes { $0.load(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian })
+        case .int16: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: Int16.self).littleEndian }
+        case .uint16: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt16.self).littleEndian }
+        case .int32: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: Int32.self).littleEndian }
+        case .uint32: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian }
+        case .int64: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: Int64.self).littleEndian }
+        case .uint64: return block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian }
+        case .float: return Float(bitPattern: block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt32.self).littleEndian })
+        case .double: return Double(bitPattern: block.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off - block.startIndex, as: UInt64.self).littleEndian })
         case .char:
             let raw = block.subdata(in: off..<off+ft.size)
             return String(data: raw, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
