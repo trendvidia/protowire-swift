@@ -3,10 +3,12 @@
 // Copyright (c) 2026 TrendVidia, LLC.
 import PackageDescription
 
+// `ConciseMagicFile`, `ForwardTrailingClosures`, and
+// `BareSlashRegexLiterals` are all defaults under Swift 6 — declaring
+// them via `.enableUpcomingFeature` here is now an error
+// ("upcoming feature ... is already enabled as of Swift version 6").
+// Drop them; keep -warnings-as-errors as the only entry.
 let sharedSwiftSettings: [SwiftSetting] = [
-    .enableUpcomingFeature("ConciseMagicFile"),
-    .enableUpcomingFeature("ForwardTrailingClosures"),
-    .enableUpcomingFeature("BareSlashRegexLiterals"),
     .unsafeFlags(["-warnings-as-errors"]),
 ]
 
@@ -55,5 +57,11 @@ let package = Package(
             dependencies: ["Protowire"],
             path: "cmd/check-decode",
             swiftSettings: sharedSwiftSettings),
-    ]
+    ],
+    // Stay on Swift 5 language mode under the 6.0 toolchain. Bumping
+    // to mode 6 turns on strict concurrency checking, which would
+    // require auditing every public struct (Position, Token, AST
+    // nodes, etc.) for Sendable conformance — scope creep for v0.70.0.
+    // Tracked for a follow-up.
+    swiftLanguageVersions: [.v5]
 )

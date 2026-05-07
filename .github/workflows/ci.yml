@@ -37,7 +37,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        swift: ["5.10", "6.0"]
+        # swift-protobuf 1.37 declares `swift-tools-version: 6.2` and
+        # SPM under Swift 5.10 can't read 6.2 manifests, so 5.10 is
+        # not a viable test target while we stay current on
+        # swift-protobuf. Floor at 6.0 (the toolchain we declare in
+        # Package.swift).
+        swift: ["6.0"]
     container:
       image: swift:${{ matrix.swift }}
     steps:
