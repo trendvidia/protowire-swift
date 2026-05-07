@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+#
+# Code ownership for protowire-swift.
+
+*                              @trendvidia/maintainers
+
+# --- Wire-impacting source (cross-port equivalence promise applies) ------
+/Sources/Protowire/             @trendvidia/maintainers
+
+# --- Vendored proto annotations (part of the upstream wire contract) -----
+/proto/                         @trendvidia/maintainers
+
+# --- Tests + harnesses (open to broader reviewer pool) ------------------
+/Tests/                         @trendvidia/contributors @trendvidia/maintainers
+/cmd/                           @trendvidia/contributors @trendvidia/maintainers
+
+# --- Build, packaging, CI -----------------------------------------------
+/.github/                       @trendvidia/maintainers
+/Package.swift                  @trendvidia/maintainers
+/Package.resolved               @trendvidia/maintainers
+/buf.yaml                       @trendvidia/maintainers
+/buf.gen.yaml                   @trendvidia/maintainers
