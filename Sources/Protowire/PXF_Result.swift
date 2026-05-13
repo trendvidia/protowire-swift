@@ -6,6 +6,15 @@ extension PXF {
     public struct Result {
         private var nullFields: Set<String> = []
         private var presentFields: Set<String> = []
+        /// Generic `@<name> *(prefix) [{ ... }]` directives the decoder
+        /// saw at document root, in source order (draft §3.4.2).
+        public internal(set) var directives: [Directive] = []
+        /// `@dataset` directives in source order (draft §3.4.4). A
+        /// document with any `@dataset` has no body entries — the rows
+        /// are the document's payload.
+        public internal(set) var datasets: [DatasetDirective] = []
+        /// `@proto` directives in source order (draft §3.4.5).
+        public internal(set) var protos: [ProtoDirective] = []
 
         internal init() {}
 

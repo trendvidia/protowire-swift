@@ -11,6 +11,40 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+## [1.0.0]
+
+Lockstep release with the rest of the `protowire-*` stack at the v1.0.0
+spec freeze. Catches the Swift port up from v0.70 to the full v0.72–v1.0
+directive grammar (drafts §3.4.2–§3.4.6).
+
+### Added
+
+- **`@<name>` generic directives** (draft §3.4.2): top-of-document
+  `@<name> *(<prefix-id>) [{ ... }]` blocks, e.g. chameleon's
+  `@header chameleon.v1.LayerHeader { id = "x" }`. Captured on
+  `Document.directives` and on `Result.directives` from `unmarshalFull`.
+- **`@entry` named directive** (draft §3.4.3): zero/one/two-prefix
+  shape, handled by the same generic mechanism.
+- **`@dataset <type> ( cols ) row*`** (draft §3.4.4): the protowire-native
+  CSV — many instances of one message type in a single document.
+  Mutually exclusive with `@type` and top-level field entries.
+  Exposed on `Document.datasets` / `Result.datasets`.
+- **`@proto`** (draft §3.4.5): embedded protobuf schema with four
+  lexically-distinguished body shapes — anonymous `{ ... }`, named
+  `<dotted-name> { ... }`, source `""" ... """`, descriptor `b"..."`.
+- **`PXF.Schema.isFutureReservedDirective`** (draft §3.4.6): v1 decoders
+  reject `@table`, `@datasource`, `@view`, `@procedure`, `@function`,
+  `@permissions` so applications cannot squat the names before the spec
+  allocates semantics.
+
+### Changed (breaking)
+
+- **`@table` removed**; use `@dataset` (no alias period — same hard
+  cutover the rest of the stack made for v1.0).
+- **`PXF.Document` extended** with `directives`, `datasets`, `protos`,
+  `bodyOffset` fields. Existing consumers of `typeURL` / `entries`
+  remain source-compatible.
+
 ## [0.70.0]
 
 Initial public release. The version number aligns this port with the rest

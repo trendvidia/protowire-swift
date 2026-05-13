@@ -44,6 +44,10 @@ public enum PXF {
         case lbracket = "["
         /// The ']' character.
         case rbracket = "]"
+        /// The '(' character.
+        case lparen = "("
+        /// The ')' character.
+        case rparen = ")"
         /// The ':' character.
         case colon = ":"
         /// The ',' character.
@@ -54,6 +58,12 @@ public enum PXF {
         case at = "@"
         /// The '@type' directive.
         case atType = "@type"
+        /// The '@dataset' directive (draft §3.4.4).
+        case atDataset = "@dataset"
+        /// The '@proto' directive (draft §3.4.5).
+        case atProto = "@proto"
+        /// A generic '@<name>' directive (draft §3.4.2). `value` carries the bare name (no leading `@`).
+        case atDirective = "@<name>"
     }
 
     /// A token produced by the PXF lexer.
@@ -68,10 +78,35 @@ public enum PXF {
 
     /// A lexer that scans PXF input and produces tokens.
     public final class Lexer {
-        private let input: Data
-        private var pos: Int = 0
+        /// Raw input bytes; exposed so the parser can slice raw body
+        /// content out of <c>{ ... }</c>-bounded directives without
+        /// re-lexing it as PXF.
+        internal let input: Data
+        internal private(set) var pos: Int = 0
         private var line: Int = 1
         private var col: Int = 1
+
+        /// Opaque lexer state used for one-token lookahead.
+        internal struct State {
+            let pos: Int
+            let line: Int
+            let col: Int
+        }
+
+        internal func save() -> State { State(pos: pos, line: line, col: col) }
+        internal func restore(_ s: State) { pos = s.pos; line = s.line; col = s.col }
+
+        /// Repositions the scanner to absolute offset `target`. Used by
+        /// `parseProtoDirective` after slicing a brace-bounded body out
+        /// of the input directly: the interior is protobuf source rather
+        /// than PXF. Walks the input one byte at a time so line/col stay
+        /// accurate.
+        internal func repositionTo(_ target: Int) {
+            precondition(target >= pos, "lexer cannot reposition backwards")
+            while pos < target && pos < input.count {
+                advance()
+            }
+        }
 
         /// Initializes a new `Lexer` with the given input data.
         /// - Parameter input: The data to lex.
@@ -169,6 +204,12 @@ public enum PXF {
             case 93: // ]
                 advance()
                 return Token(kind: .rbracket, value: "]", pos: startPos)
+            case 40: // (
+                advance()
+                return Token(kind: .lparen, value: "(", pos: startPos)
+            case 41: // )
+                advance()
+                return Token(kind: .rparen, value: ")", pos: startPos)
             case 61: // =
                 advance()
                 return Token(kind: .equal, value: "=", pos: startPos)
@@ -374,10 +415,15 @@ public enum PXF {
             while self.pos < input.count && isIdentifierPart(peek()) {
                 name.append(Character(UnicodeScalar(advance())))
             }
-            if name == "type" {
-                return Token(kind: .atType, value: "@type", pos: pos)
+            if name.isEmpty {
+                return Token(kind: .error, value: "bare '@' without directive name", pos: pos)
             }
-            return Token(kind: .error, value: "unknown directive: @\(name)", pos: pos)
+            switch name {
+            case "type":    return Token(kind: .atType,     value: "@type",    pos: pos)
+            case "dataset": return Token(kind: .atDataset,  value: "@dataset", pos: pos)
+            case "proto":   return Token(kind: .atProto,    value: "@proto",   pos: pos)
+            default:        return Token(kind: .atDirective, value: name,       pos: pos)
+            }
         }
 
         private func lexIdentifierOrKeyword(_ pos: Position) -> Token {
@@ -450,7 +496,7 @@ public enum PXF {
         private func lexTimestamp(_ pos: Position, _ start: Int) -> Token {
             while self.pos < input.count {
                 let ch = peek()
-                if ch == 32 || ch == 10 || ch == 9 || ch == 13 || ch == 44 || ch == 93 || ch == 125 || ch == 35 { // space, \n, tab, \r, comma, ], }, #
+                if ch == 32 || ch == 10 || ch == 9 || ch == 13 || ch == 44 || ch == 93 || ch == 125 || ch == 41 || ch == 35 { // space, \n, tab, \r, comma, ], }, ), #
                     break
                 }
                 if ch == 47 && (peekAt(1) == 47 || peekAt(1) == 42) { // / followed by / or *
