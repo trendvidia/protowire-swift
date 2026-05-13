@@ -12,16 +12,156 @@ extension PXF {
 
     public struct Document: Equatable {
         public var typeURL: String?
+        /// Generic `@<name> *(prefix) [{ ... }]` directives in source order
+        /// (draft §3.4.2). Excludes `@type`, `@dataset`, `@proto`.
+        public var directives: [Directive]
+        /// `@dataset` directives in source order (draft §3.4.4). A document
+        /// with any `@dataset` MUST NOT have `@type` or top-level body entries.
+        public var datasets: [DatasetDirective]
+        /// `@proto` directives in source order (draft §3.4.5).
+        public var protos: [ProtoDirective]
+        /// Byte offset where the schema-typed body begins, after all leading directives.
+        public var bodyOffset: Int
         public var entries: [Entry]
         public var leadingComments: [Comment]
 
+        public init(typeURL: String? = nil,
+                    directives: [Directive] = [],
+                    datasets: [DatasetDirective] = [],
+                    protos: [ProtoDirective] = [],
+                    bodyOffset: Int = 0,
+                    entries: [Entry] = [],
+                    leadingComments: [Comment] = []) {
+            self.typeURL = typeURL
+            self.directives = directives
+            self.datasets = datasets
+            self.protos = protos
+            self.bodyOffset = bodyOffset
+            self.entries = entries
+            self.leadingComments = leadingComments
+        }
+
         public static func == (lhs: Document, rhs: Document) -> Bool {
             guard lhs.typeURL == rhs.typeURL && lhs.leadingComments == rhs.leadingComments &&
+                  lhs.directives == rhs.directives && lhs.datasets == rhs.datasets &&
+                  lhs.protos == rhs.protos && lhs.bodyOffset == rhs.bodyOffset &&
                   lhs.entries.count == rhs.entries.count else { return false }
             for i in 0..<lhs.entries.count {
                 if !lhs.entries[i].isEqual(to: rhs.entries[i]) { return false }
             }
             return true
+        }
+    }
+
+    /// Top-of-document `@<name> *(<prefix-id>) [{ ... }]` entry (draft §3.4.2).
+    /// Side-channel metadata that sits alongside the schema-typed body —
+    /// e.g. chameleon's `@header chameleon.v1.LayerHeader { id = "x" }`.
+    public struct Directive: Equatable {
+        public var pos: Position
+        public var name: String
+        public var prefixes: [String]
+        /// Back-compat single-prefix sugar: populated when exactly one
+        /// prefix identifier was supplied. Empty for zero or 2+ prefixes;
+        /// new code should read `prefixes` directly.
+        public var type: String
+        /// Raw inner bytes of the block; `nil` when the directive has no `{ ... }`.
+        public var body: Data?
+        public var leadingComments: [Comment]
+
+        public init(pos: Position, name: String, prefixes: [String] = [],
+                    type: String = "", body: Data? = nil, leadingComments: [Comment] = []) {
+            self.pos = pos
+            self.name = name
+            self.prefixes = prefixes
+            self.type = type
+            self.body = body
+            self.leadingComments = leadingComments
+        }
+    }
+
+    /// `@dataset <type> ( col1, col2, ... ) row*` entry at document root
+    /// (draft §3.4.4). Carries many instances of one message type in a
+    /// single document — the protowire-native CSV. `type` MAY be empty
+    /// when an anonymous `@proto` precedes the `@dataset`.
+    public struct DatasetDirective: Equatable {
+        public var pos: Position
+        public var type: String
+        public var columns: [String]
+        public var rows: [DatasetRow]
+        public var leadingComments: [Comment]
+
+        public init(pos: Position, type: String = "", columns: [String] = [],
+                    rows: [DatasetRow] = [], leadingComments: [Comment] = []) {
+            self.pos = pos
+            self.type = type
+            self.columns = columns
+            self.rows = rows
+            self.leadingComments = leadingComments
+        }
+    }
+
+    /// One parenthesised cell tuple in a `@dataset` directive. `cells` has the
+    /// same length as the containing `DatasetDirective.columns`. A `nil` entry
+    /// denotes an absent field; a `NullVal` denotes present-but-null; any other
+    /// value denotes a present field.
+    public struct DatasetRow: Equatable {
+        public var pos: Position
+        public var cells: [AnyValue?]
+
+        public init(pos: Position, cells: [AnyValue?] = []) {
+            self.pos = pos
+            self.cells = cells
+        }
+
+        public static func == (lhs: DatasetRow, rhs: DatasetRow) -> Bool {
+            guard lhs.pos == rhs.pos, lhs.cells.count == rhs.cells.count else { return false }
+            for i in 0..<lhs.cells.count {
+                switch (lhs.cells[i], rhs.cells[i]) {
+                case (nil, nil): continue
+                case (.some(let a), .some(let b)):
+                    if !a.value.isEqual(to: b.value) { return false }
+                default: return false
+                }
+            }
+            return true
+        }
+    }
+
+    /// Lexical body shape of a `@proto` directive (draft §3.4.5).
+    public enum ProtoShape: String, Equatable {
+        case anonymous, named, source, descriptor
+    }
+
+    /// `@proto <body>` entry at document root (draft §3.4.5). `body` holds raw
+    /// bytes interpreted per `shape`: for anonymous/named, the bytes between
+    /// `{` and matching `}`; for source, the dedented triple-quoted string
+    /// contents; for descriptor, the base64-decoded FileDescriptorSet.
+    public struct ProtoDirective: Equatable {
+        public var pos: Position
+        public var shape: ProtoShape
+        /// Dotted message type name; non-empty only when `shape == .named`.
+        public var typeName: String
+        public var body: Data
+        public var leadingComments: [Comment]
+
+        public init(pos: Position, shape: ProtoShape, typeName: String = "",
+                    body: Data = Data(), leadingComments: [Comment] = []) {
+            self.pos = pos
+            self.shape = shape
+            self.typeName = typeName
+            self.body = body
+            self.leadingComments = leadingComments
+        }
+    }
+
+    /// Type-erased `Value` wrapper for collections that need `Equatable`
+    /// (e.g. `DatasetRow.cells`). `Value` itself is a protocol so it can't
+    /// participate directly.
+    public struct AnyValue: Equatable {
+        public let value: Value
+        public init(_ value: Value) { self.value = value }
+        public static func == (lhs: AnyValue, rhs: AnyValue) -> Bool {
+            lhs.value.isEqual(to: rhs.value)
         }
     }
 

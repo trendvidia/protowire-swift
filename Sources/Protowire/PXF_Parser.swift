@@ -31,6 +31,22 @@ extension PXF {
         case invalidDuration(Position, String)
         /// Unexpected end of file.
         case unexpectedEOF
+        /// A future-reserved directive name was used (draft §3.4.6).
+        case futureReservedDirective(Position, String)
+        /// An unmatched `{` was encountered in a directive body.
+        case unmatchedBrace(Position, String)
+        /// `@dataset` coexists with `@type` (draft §3.4.4 standalone constraint).
+        case datasetCoexistsWithType(Position)
+        /// `@dataset` coexists with top-level field entries (draft §3.4.4).
+        case datasetCoexistsWithBodyEntries(Position)
+        /// `@dataset` column path contained a dot (draft §3.4.4).
+        case datasetDottedColumn(Position, String)
+        /// `@dataset` row had a different number of cells from the column count.
+        case datasetArityMismatch(Position, got: Int, expected: Int)
+        /// `@dataset` cell contained a list or block value (draft §3.4.4).
+        case datasetCellRejected(Position, kind: String)
+        /// Expected token at a specific parse position with a fixed error string.
+        case directiveExpected(Position, String)
 
         /// A localized description of the error.
         public var description: String {
@@ -51,6 +67,20 @@ extension PXF {
             case .invalidTimestamp(let pos, let val): return "[\(pos)] invalid timestamp: \(val)"
             case .invalidDuration(let pos, let val): return "[\(pos)] invalid duration: \(val)"
             case .unexpectedEOF: return "unexpected EOF"
+            case .futureReservedDirective(let pos, let name):
+                return "[\(pos)] @\(name) is a spec-reserved directive name with no v1 semantics (draft §3.4.6)"
+            case .unmatchedBrace(let pos, let label): return "[\(pos)] \(label): unmatched '{'"
+            case .datasetCoexistsWithType(let pos):
+                return "[\(pos)] @dataset directive cannot coexist with @type; the @dataset header declares the document's type (draft §3.4.4)"
+            case .datasetCoexistsWithBodyEntries(let pos):
+                return "[\(pos)] @dataset directive cannot coexist with top-level field entries; the document's payload is the @dataset rows (draft §3.4.4)"
+            case .datasetDottedColumn(let pos, let name):
+                return "[\(pos)] @dataset column \"\(name)\": dotted column paths are not supported in v1 (draft §3.4.4)"
+            case .datasetArityMismatch(let pos, let got, let expected):
+                return "[\(pos)] @dataset row has \(got) cells, expected \(expected) (column count)"
+            case .datasetCellRejected(let pos, let kind):
+                return "[\(pos)] @dataset cells cannot contain \(kind) values in v1 (draft §3.4.4)"
+            case .directiveExpected(let pos, let what): return "[\(pos)] \(what)"
             }
         }
     }
@@ -97,15 +127,48 @@ extension PXF {
         /// - Returns: The parsed `Document`.
         /// - Throws: A `ParserError` if parsing fails.
         public func parseDocument() throws -> Document {
-            var doc = Document(typeURL: nil, entries: [], leadingComments: flushComments())
+            var doc = Document(leadingComments: flushComments())
 
-            if current.kind == .atType {
-                advance()
-                if current.kind != .identifier {
-                    throw ParserError.expectedTypeURL(current.pos, got: current.kind)
+            // Top-of-document directives: @type, @<name>, @dataset, @proto
+            // may interleave in any order. bodyOffset tracks the byte
+            // right after the last directive token.
+            directives: while true {
+                switch current.kind {
+                case .atType:
+                    advance()
+                    if current.kind != .identifier {
+                        throw ParserError.expectedTypeURL(current.pos, got: current.kind)
+                    }
+                    doc.typeURL = current.value
+                    doc.bodyOffset = lexer.pos
+                    advance()
+                case .atDirective:
+                    let (d, end) = try parseDirective()
+                    doc.directives.append(d)
+                    doc.bodyOffset = end
+                case .atDataset:
+                    let (ds, end) = try parseDatasetDirective()
+                    doc.datasets.append(ds)
+                    doc.bodyOffset = end
+                case .atProto:
+                    let (pd, end) = try parseProtoDirective()
+                    doc.protos.append(pd)
+                    doc.bodyOffset = end
+                default:
+                    break directives
                 }
-                doc.typeURL = current.value
-                advance()
+            }
+
+            // Standalone constraint (draft §3.4.4): a document containing
+            // any @dataset directive MUST NOT also carry @type or
+            // top-level field entries.
+            if let firstDataset = doc.datasets.first {
+                if doc.typeURL != nil {
+                    throw ParserError.datasetCoexistsWithType(firstDataset.pos)
+                }
+                if current.kind != .eof {
+                    throw ParserError.datasetCoexistsWithBodyEntries(current.pos)
+                }
             }
 
             while current.kind != .eof {
@@ -117,6 +180,227 @@ extension PXF {
             }
 
             return doc
+        }
+
+        /// Parses `@<name> *(<prefix-id>) [{ ... }]`. The `.atDirective`
+        /// token is current on entry. Returns the directive plus the byte
+        /// offset immediately after its last token.
+        private func parseDirective() throws -> (Directive, Int) {
+            let leading = flushComments()
+            let atPos = current.pos
+            let name = current.value
+            if Schema.isFutureReservedDirective(name) {
+                throw ParserError.futureReservedDirective(atPos, name)
+            }
+            var prefixes: [String] = []
+            // `@` + name. The lexer doesn't track byte offsets per token, so
+            // estimate the end from `lexer.pos` post-advance.
+            advance()
+            var endOffset = lexer.pos
+
+            // Zero-or-more prefix identifiers. One-token lookahead
+            // disambiguates: an identifier followed by `=` or `:` is a
+            // body field key, not a directive prefix.
+            while current.kind == .identifier {
+                let peek = peekKind()
+                if peek == .equal || peek == .colon { break }
+                prefixes.append(current.value)
+                advance()
+                endOffset = lexer.pos
+            }
+
+            var body: Data? = nil
+            if current.kind == .lbrace {
+                let open = lexer.pos - 1 // `{` was already consumed by lexer.next()
+                guard let close = BraceScan.findMatchingBrace(lexer.input, open) else {
+                    throw ParserError.unmatchedBrace(atPos, "directive @\(name)")
+                }
+                // Validate inner well-formedness by parsing the block.
+                _ = try parseBlockVal(typeURL: nil, depth: 1)
+                body = lexer.input.subdata(in: (open + 1)..<close)
+                endOffset = close + 1
+            }
+
+            let typeField = prefixes.count == 1 ? prefixes[0] : ""
+            return (Directive(pos: atPos, name: name, prefixes: prefixes,
+                              type: typeField, body: body, leadingComments: leading),
+                    endOffset)
+        }
+
+        /// Parses `@dataset <type> ( col1, col2, ... ) row*` per draft §3.4.4.
+        /// `.atDataset` is current on entry.
+        private func parseDatasetDirective() throws -> (DatasetDirective, Int) {
+            let leading = flushComments()
+            let atPos = current.pos
+            advance() // consume @dataset
+
+            // Optional row message type (dotted identifier). MAY be omitted
+            // when an anonymous @proto precedes the @dataset.
+            var type = ""
+            if current.kind == .identifier {
+                type = current.value
+                advance()
+            }
+
+            if current.kind != .lparen {
+                throw ParserError.directiveExpected(current.pos,
+                    "expected '(' to start @dataset column list, got \(current.kind.rawValue)")
+            }
+            advance()
+
+            if current.kind != .identifier {
+                throw ParserError.directiveExpected(current.pos,
+                    "@dataset column list must contain at least one field name, got \(current.kind.rawValue)")
+            }
+            var columns: [String] = []
+            while true {
+                if current.kind != .identifier {
+                    throw ParserError.directiveExpected(current.pos,
+                        "expected column field name, got \(current.kind.rawValue)")
+                }
+                let colName = current.value
+                if colName.contains(".") {
+                    throw ParserError.datasetDottedColumn(current.pos, colName)
+                }
+                columns.append(colName)
+                advance()
+                if current.kind == .comma { advance(); continue }
+                if current.kind == .rparen { break }
+                throw ParserError.directiveExpected(current.pos,
+                    "expected ',' or ')' in @dataset column list, got \(current.kind.rawValue)")
+            }
+            var endOffset = lexer.pos // past `)`
+            advance()
+
+            var rows: [DatasetRow] = []
+            while current.kind == .lparen {
+                let (row, rowEnd) = try parseDatasetRow(expected: columns.count)
+                rows.append(row)
+                endOffset = rowEnd
+            }
+
+            return (DatasetDirective(pos: atPos, type: type, columns: columns,
+                                     rows: rows, leadingComments: leading),
+                    endOffset)
+        }
+
+        private func parseDatasetRow(expected: Int) throws -> (DatasetRow, Int) {
+            let pos = current.pos
+            advance() // consume (
+
+            var cells: [AnyValue?] = []
+            cells.append(try parseRowCell())
+            while current.kind == .comma {
+                advance()
+                cells.append(try parseRowCell())
+            }
+            if current.kind != .rparen {
+                throw ParserError.directiveExpected(current.pos,
+                    "expected ',' or ')' in @dataset row, got \(current.kind.rawValue)")
+            }
+            let endOffset = lexer.pos
+            advance()
+
+            if cells.count != expected {
+                throw ParserError.datasetArityMismatch(pos, got: cells.count, expected: expected)
+            }
+            return (DatasetRow(pos: pos, cells: cells), endOffset)
+        }
+
+        private func parseRowCell() throws -> AnyValue? {
+            switch current.kind {
+            case .comma, .rparen: return nil
+            case .lbracket: throw ParserError.datasetCellRejected(current.pos, kind: "list")
+            case .lbrace: throw ParserError.datasetCellRejected(current.pos, kind: "block")
+            default:
+                let v = try parseValue(depth: 0)
+                return AnyValue(v)
+            }
+        }
+
+        /// Parses `@proto <body>`. `.atProto` is current on entry.
+        /// Distinguishes four lexically-determined shapes (draft §3.4.5).
+        private func parseProtoDirective() throws -> (ProtoDirective, Int) {
+            let leading = flushComments()
+            let atPos = current.pos
+            advance() // consume @proto
+
+            switch current.kind {
+            case .lbrace:
+                let (body, end) = try captureBraceBody(label: "@proto (anonymous form)")
+                return (ProtoDirective(pos: atPos, shape: .anonymous, body: body,
+                                       leadingComments: leading), end)
+            case .identifier:
+                let typeName = current.value
+                advance()
+                if current.kind != .lbrace {
+                    throw ParserError.directiveExpected(current.pos,
+                        "expected '{' after @proto \(typeName), got \(current.kind.rawValue)")
+                }
+                let (body, end) = try captureBraceBody(label: "@proto \(typeName)")
+                return (ProtoDirective(pos: atPos, shape: .named, typeName: typeName,
+                                       body: body, leadingComments: leading), end)
+            case .string:
+                let bytes = current.value.data(using: .utf8) ?? Data()
+                advance()
+                let end = lexer.pos
+                return (ProtoDirective(pos: atPos, shape: .source, body: bytes,
+                                       leadingComments: leading), end)
+            case .bytes:
+                let raw = current.value
+                let decoded: Data
+                if let std = Data(base64Encoded: raw) {
+                    decoded = std
+                } else {
+                    // URL-safe alphabet (allowed per draft §3.7).
+                    var padded = raw.replacingOccurrences(of: "-", with: "+")
+                                    .replacingOccurrences(of: "_", with: "/")
+                    let rem = padded.count % 4
+                    if rem != 0 { padded.append(String(repeating: "=", count: 4 - rem)) }
+                    guard let url = Data(base64Encoded: padded) else {
+                        throw ParserError.invalidBase64(current.pos, raw)
+                    }
+                    decoded = url
+                }
+                advance()
+                let end = lexer.pos
+                return (ProtoDirective(pos: atPos, shape: .descriptor, body: decoded,
+                                       leadingComments: leading), end)
+            default:
+                throw ParserError.directiveExpected(current.pos,
+                    "expected '{', dotted identifier, triple-quoted string, or b\"...\" after @proto, got \(current.kind.rawValue)")
+            }
+        }
+
+        /// Slices the raw bytes between `{` and the matching `}` (both
+        /// exclusive) without decoding the contents as PXF. Repositions
+        /// the lexer past the closing `}` and primes the parser.
+        private func captureBraceBody(label: String) throws -> (Data, Int) {
+            let open = lexer.pos - 1 // `{` already consumed into `current`
+            guard let close = BraceScan.findMatchingBrace(lexer.input, open) else {
+                throw ParserError.unmatchedBrace(current.pos, label)
+            }
+            let body = lexer.input.subdata(in: (open + 1)..<close)
+            lexer.repositionTo(close + 1)
+            advance() // prime current token past `}`
+            return (body, close + 1)
+        }
+
+        /// One-token lookahead with full state restore. Skips
+        /// newlines/comments without disturbing pending-comment
+        /// accumulation.
+        private func peekKind() -> TokenKind {
+            let state = lexer.save()
+            let savedCurrent = current
+            let savedCount = comments.count
+            advance()
+            let peeked = current.kind
+            lexer.restore(state)
+            current = savedCurrent
+            if comments.count > savedCount {
+                comments.removeLast(comments.count - savedCount)
+            }
+            return peeked
         }
 
         private func parseEntry(allowMapEntry: Bool = true, depth: Int = 0) throws -> Entry {

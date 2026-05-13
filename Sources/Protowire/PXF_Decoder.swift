@@ -52,6 +52,11 @@ public final class PXFDecoder {
     public func unmarshalFull<T: Decodable>(_ type: T.Type, from string: String) throws -> (T, PXF.Result) {
         let doc = try PXF.Parser(string: string).parseDocument()
         var result = PXF.Result()
+        // Surface document-root directives on the result so callers can
+        // walk them after decode.
+        result.directives = doc.directives
+        result.datasets = doc.datasets
+        result.protos = doc.protos
         // Pre-walk the document so any top-level `field = null` entries land in
         // `result.nullFields` BEFORE T's synthesized init runs. The keyed
         // container's contains/decode entry points then surface `_null` as a
