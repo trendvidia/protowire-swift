@@ -26,7 +26,7 @@ jobs:
     name: test / macos
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: swift --version
       - run: swift build
       - run: swift test
@@ -46,7 +46,7 @@ jobs:
     container:
       image: swift:${{ matrix.swift }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: swift --version
       - run: swift build
       - run: swift test
@@ -65,11 +65,11 @@ jobs:
       # cross_security_check.sh resolves SIBLING_DIR=parent_of_spec and
       # then SWIFT_DIR=$SIBLING_DIR/protowire-swift. Check both repos out
       # as siblings so the path math works.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: protowire-swift
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: trendvidia/protowire
           path: protowire
