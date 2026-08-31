@@ -46,12 +46,12 @@ The package keeps `swift-tools-version: 5.10` for broader compatibility;
 - `pb`: signed-int fields default to proto3 `int32`/`int64` (plain
   varint). Canonical envelope: 129 bytes (258 hex chars) starting
   `08 92 03 1a 04 de ad be ef 22 76 …`.
-- `pxf` annotations: `(pxf.required)` = 50000, `(pxf.default)` = 50001.
+- `pxf` annotations: `(pxf.required)` = 1314, `(pxf.default)` = 1315.
   Their definitions live in `proto/pxf/annotations.proto`.
 - `_null` field of type `google.protobuf.FieldMask` carries null-survival
   across protobuf binary.
-- `sbe` annotations: `sbe.schema_id` = 50100, `version` = 50101,
-  `template_id` = 50200, `length` = 50300, `encoding` = 50301.
+- `sbe` annotations: `sbe.schema_id` = 1319, `version` = 1320,
+  `template_id` = 1321, `length` = 1322, `encoding` = 1323.
 - `sbe` wire: 8-byte LE message header + 4-byte LE group header.
 
 ## Design calls (settled)

@@ -87,13 +87,13 @@ public let Pxf_Annotations_Extensions: SwiftProtobuf.SimpleExtensionMap = [
 /// Mark a field as required in PXF. Absent fields cause a validation error.
 /// A field set to null still counts as present.
 public let Pxf_Extensions_required = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufBool>, SwiftProtobuf.Google_Protobuf_FieldOptions>(
-  _protobuf_fieldNumber: 50000,
+  _protobuf_fieldNumber: 1314,
   fieldName: "pxf.required"
 )
 
 /// Default value applied when a field is absent (not null) in PXF.
 /// The value is a PXF literal string, e.g. "42", "true", "\"hello\"".
 public let Pxf_Extensions_default = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufString>, SwiftProtobuf.Google_Protobuf_FieldOptions>(
-  _protobuf_fieldNumber: 50001,
+  _protobuf_fieldNumber: 1315,
   fieldName: "pxf.default"
 )
