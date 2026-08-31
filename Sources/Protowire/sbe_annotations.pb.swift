@@ -144,26 +144,26 @@ public let Sbe_Annotations_Extensions: SwiftProtobuf.SimpleExtensionMap = [
 
 /// SBE schema identifier. Required on files containing SBE messages.
 public let Sbe_Extensions_schema_id = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufUInt32>, SwiftProtobuf.Google_Protobuf_FileOptions>(
-  _protobuf_fieldNumber: 50100,
+  _protobuf_fieldNumber: 1319,
   fieldName: "sbe.schema_id"
 )
 
 /// SBE schema version.
 public let Sbe_Extensions_version = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufUInt32>, SwiftProtobuf.Google_Protobuf_FileOptions>(
-  _protobuf_fieldNumber: 50101,
+  _protobuf_fieldNumber: 1320,
   fieldName: "sbe.version"
 )
 
 /// SBE message template identifier. Required on each top-level SBE message.
 public let Sbe_Extensions_template_id = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufUInt32>, SwiftProtobuf.Google_Protobuf_MessageOptions>(
-  _protobuf_fieldNumber: 50200,
+  _protobuf_fieldNumber: 1321,
   fieldName: "sbe.template_id"
 )
 
 /// Fixed byte length for string and bytes fields.
 /// Values longer than this are truncated; shorter values are null-padded.
 public let Sbe_Extensions_length = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufUInt32>, SwiftProtobuf.Google_Protobuf_FieldOptions>(
-  _protobuf_fieldNumber: 50300,
+  _protobuf_fieldNumber: 1322,
   fieldName: "sbe.length"
 )
 
@@ -171,6 +171,6 @@ public let Sbe_Extensions_length = SwiftProtobuf.MessageExtension<SwiftProtobuf.
 /// SBE encoding, e.g. uint32 -> "uint8". Valid values:
 /// int8, int16, int32, int64, uint8, uint16, uint32, uint64, float, double.
 public let Sbe_Extensions_encoding = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufString>, SwiftProtobuf.Google_Protobuf_FieldOptions>(
-  _protobuf_fieldNumber: 50301,
+  _protobuf_fieldNumber: 1323,
   fieldName: "sbe.encoding"
 )
