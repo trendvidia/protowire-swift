@@ -7,9 +7,13 @@
 //
 //   dump-envelope                        canonical Envelope → pb hex
 //   dump-envelope --sbe FDS MESSAGE DOC  PXF DOC decoded against MESSAGE in FDS → SBE hex
-//   dump-envelope --pb  FDS MESSAGE DOC  not implemented here (exit 3): the PXF
-//                                        decoder is a Codable bridge and reads
-//                                        no (pxf.*) annotation (issue #11)
+//   dump-envelope --pb  FDS MESSAGE DOC  PXF DOC decoded against MESSAGE in FDS → pb hex
+//
+// --pb is how the gate proves this port reads (pxf.required) = 1314 and
+// (pxf.default) = 1315: `PXF.Annotations` indexes them from the descriptor
+// set and PXFDecoder applies them while decoding into a hand-mirrored
+// Codable type (see dumpPB). A port looking for the wrong number accepts
+// missing-required.pxf, or emits ok.pxf without its defaulted fields.
 //
 // --sbe is how the gate proves this port reads (sbe.schema_id) = 1319,
 // (sbe.version) = 1320, (sbe.template_id) = 1321, (sbe.length) = 1322 and
@@ -24,8 +28,7 @@
 //
 // Exit 0 with hex on stdout; 1 with "reject: <reason>" on stderr when the
 // document cannot be decoded against the message; 2 for anything that is
-// the harness's fault; 3 with "not-implemented: <reason>" for a leg this
-// port does not have.
+// the harness's fault.
 
 import Foundation
 import Protowire
@@ -163,8 +166,8 @@ struct DocumentConverter {
 
 func dumpFixture(mode: String, fdsPath: String, message: String, docPath: String) throws {
     if mode == "--pb" {
-        FileHandle.standardError.write(Data("not-implemented: the Swift PXF decoder reads no (pxf.required)/(pxf.default) annotation (protowire-swift#11)\n".utf8))
-        exit(3)
+        try dumpPB(fdsPath: fdsPath, message: message, docPath: docPath)
+        return
     }
     let fdsData: Data
     let doc: String
@@ -201,6 +204,70 @@ func dumpFixture(mode: String, fdsPath: String, message: String, docPath: String
         exit(1)
     }
     do { print(hex(try SBEMarshaller().marshal(values, template: tmpl))) } catch { fatal(2, "\(error)") }
+}
+
+// --pb: PXF DOC decoded against MESSAGE with the schema's (pxf.required) /
+// (pxf.default) applied, marshalled as protobuf bytes. This port has no
+// dynamic message and no generated code for the fixture, so MESSAGE maps to
+// a hand-mirrored Codable type (the way check-decode mirrors the adversarial
+// corpus): PXFDecoder matches the mirror's keys to the document by proto
+// field name, PBEncoder writes them by field number, and the annotations
+// come from FDS through PXF.Annotations (protowire-swift#11).
+
+/// testdata/annotations/settings.proto — settings.v1.Settings.
+struct Settings: Codable {
+    var name: String = ""
+    var retries: Int32 = 0
+    var region: String = ""
+    var verbose: Bool = false
+    enum CodingKeys: Int, CodingKey { case name = 1, retries = 2, region = 3, verbose = 4 }
+    init() {}
+    init(from decoder: Swift.Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        retries = try c.decodeIfPresent(Int32.self, forKey: .retries) ?? 0
+        region = try c.decodeIfPresent(String.self, forKey: .region) ?? ""
+        verbose = try c.decodeIfPresent(Bool.self, forKey: .verbose) ?? false
+    }
+    func encode(to encoder: Swift.Encoder) throws {
+        // proto3 presence: a scalar at its zero value is not on the wire.
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if !name.isEmpty { try c.encode(name, forKey: .name) }
+        if retries != 0 { try c.encode(retries, forKey: .retries) }
+        if !region.isEmpty { try c.encode(region, forKey: .region) }
+        if verbose { try c.encode(verbose, forKey: .verbose) }
+    }
+}
+
+func dumpPB(fdsPath: String, message: String, docPath: String) throws {
+    let fdsData: Data
+    let doc: String
+    do {
+        fdsData = try Data(contentsOf: URL(fileURLWithPath: fdsPath))
+        doc = try String(contentsOfFile: docPath, encoding: .utf8)
+    } catch { fatal(2, "\(error)") }
+
+    let fds: Google_Protobuf_FileDescriptorSet
+    do {
+        fds = try Google_Protobuf_FileDescriptorSet(serializedBytes: fdsData, extensions: Pxf_Annotations_Extensions)
+    } catch { fatal(2, "\(fdsPath): \(error)") }
+    let annotations = PXF.Annotations(descriptorSet: fds)
+    guard annotations.message(message) != nil else { fatal(2, "\(fdsPath): \(message) not found") }
+
+    let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
+    let encodable: Encodable
+    do {
+        switch message {
+        case "settings.v1.Settings":
+            encodable = try decoder.decode(Settings.self, from: doc)
+        default:
+            fatal(2, "\(message): no Codable mirror in this harness (add one beside Settings)")
+        }
+    } catch {
+        FileHandle.standardError.write(Data("reject: \(error)\n".utf8))
+        exit(1)
+    }
+    do { print(hex(try PBEncoder().encode(encodable))) } catch { fatal(2, "\(error)") }
 }
 
 enum DescriptorIndexLookup {

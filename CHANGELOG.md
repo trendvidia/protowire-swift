@@ -11,6 +11,26 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`(pxf.required)` and `(pxf.default)` on the Codable decode path**
+  (#11). `PXF.Annotations(descriptorSet:)` indexes the two annotations
+  (extension numbers 1314 and 1315) per message from a
+  `Google_Protobuf_FileDescriptorSet` parsed with
+  `Pxf_Annotations_Extensions`; `PXFDecoder(annotations:rootMessage:)`
+  then rejects an absent required field before the Swift type sees the
+  document (every field the schema declares, whether or not the type asks
+  for it), synthesises the schema's default for an absent field the type
+  does ask for, and follows the descriptor into singular nested messages.
+  Semantics mirror protowire-go's `postDecode`: `null` counts as present,
+  list elements and map values are not annotated, and a defaulted field is
+  still reported absent by `PXF.Result`. A decoder without annotations
+  behaves exactly as before.
+- `dump-envelope --pb FDS MESSAGE DOC`, the gate leg protowire's
+  `cross_envelope_check.sh` had listed as a declared omission for this port
+  (#10): the fixture document is decoded into a hand-mirrored Codable type
+  with the annotations from FDS and marshalled with `PBEncoder`.
+
 ## [1.0.0]
 
 Lockstep release with the rest of the `protowire-*` stack at the v1.0.0
