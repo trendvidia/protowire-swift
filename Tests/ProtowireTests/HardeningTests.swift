@@ -197,7 +197,12 @@ final class HardeningTests: XCTestCase {
 
     /// `count` decimal digits with no leading zero, varied so a limb bug shows.
     private func digits(_ count: Int) -> String {
-        let ascii = (0..<count).map { UInt8(48 + (1 + $0 * $0 + $0 / 7) % 9) }
+        var ascii = [UInt8]()
+        ascii.reserveCapacity(count)
+        for i in 0..<count {
+            let digit: Int = (1 + i * i + i / 7) % 9
+            ascii.append(UInt8(48 + digit))
+        }
         return String(decoding: ascii, as: UTF8.self)
     }
 
