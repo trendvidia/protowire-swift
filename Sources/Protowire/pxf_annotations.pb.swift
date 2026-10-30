@@ -67,6 +67,26 @@ extension SwiftProtobuf.Google_Protobuf_FieldOptions {
     clearExtensionValue(ext: Pxf_Extensions_default)
   }
 
+  /// Key field of a keyed repeated field (issue #116). Valid only on
+  /// repeated message-typed fields; the value names a singular string
+  /// field of the element message. In PXF text the field may then be
+  /// written as a block of named blocks — entry name = key value,
+  /// entry order = list order. pb/SBE wire outputs are unchanged.
+  public var Pxf_key: String {
+    get {return getExtensionValue(ext: Pxf_Extensions_key) ?? String()}
+    set {setExtensionValue(ext: Pxf_Extensions_key, value: newValue)}
+  }
+  /// Returns true if extension `Pxf_Extensions_key`
+  /// has been explicitly set.
+  public var hasPxf_key: Bool {
+    return hasExtensionValue(ext: Pxf_Extensions_key)
+  }
+  /// Clears the value of extension `Pxf_Extensions_key`.
+  /// Subsequent reads from it will return its default value.
+  public mutating func clearPxf_key() {
+    clearExtensionValue(ext: Pxf_Extensions_key)
+  }
+
 }
 
 // MARK: - File's ExtensionMap: Pxf_Annotations_Extensions
@@ -77,7 +97,8 @@ extension SwiftProtobuf.Google_Protobuf_FieldOptions {
 /// a larger `SwiftProtobuf.SimpleExtensionMap`.
 public let Pxf_Annotations_Extensions: SwiftProtobuf.SimpleExtensionMap = [
   Pxf_Extensions_required,
-  Pxf_Extensions_default
+  Pxf_Extensions_default,
+  Pxf_Extensions_key
 ]
 
 // Extension Objects - The only reason these might be needed is when manually
@@ -96,4 +117,14 @@ public let Pxf_Extensions_required = SwiftProtobuf.MessageExtension<SwiftProtobu
 public let Pxf_Extensions_default = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufString>, SwiftProtobuf.Google_Protobuf_FieldOptions>(
   _protobuf_fieldNumber: 1315,
   fieldName: "pxf.default"
+)
+
+/// Key field of a keyed repeated field (issue #116). Valid only on
+/// repeated message-typed fields; the value names a singular string
+/// field of the element message. In PXF text the field may then be
+/// written as a block of named blocks — entry name = key value,
+/// entry order = list order. pb/SBE wire outputs are unchanged.
+public let Pxf_Extensions_key = SwiftProtobuf.MessageExtension<SwiftProtobuf.OptionalExtensionField<SwiftProtobuf.ProtobufString>, SwiftProtobuf.Google_Protobuf_FieldOptions>(
+  _protobuf_fieldNumber: 1316,
+  fieldName: "pxf.key"
 )
