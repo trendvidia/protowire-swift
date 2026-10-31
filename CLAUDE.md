@@ -21,6 +21,7 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_AST.swift` — Document / Entry / Value structs (custom `isEqual(to:)`
   for heterogeneous Value comparison).
 - `PXF_Parser.swift` — tokens → AST.
+- `PXF_Keyed.swift` — keyed repeated fields: rules, placement, canonical form.
 - `PXF_Decoder.swift`, `PXF_Encoder.swift` — Codable bridges.
 - `PXF_Result.swift` — per-field presence (set / null / absent).
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
@@ -46,8 +47,8 @@ The package keeps `swift-tools-version: 5.10` for broader compatibility;
 - `pb`: signed-int fields default to proto3 `int32`/`int64` (plain
   varint). Canonical envelope: 129 bytes (258 hex chars) starting
   `08 92 03 1a 04 de ad be ef 22 76 …`.
-- `pxf` annotations: `(pxf.required)` = 1314, `(pxf.default)` = 1315.
-  Their definitions live in `proto/pxf/annotations.proto`.
+- `pxf` annotations: `(pxf.required)` = 1314, `(pxf.default)` = 1315,
+  `(pxf.key)` = 1316. Their definitions live in `proto/pxf/annotations.proto`.
 - `_null` field of type `google.protobuf.FieldMask` carries null-survival
   across protobuf binary.
 - `sbe` annotations: `sbe.schema_id` = 1319, `version` = 1320,
@@ -92,6 +93,13 @@ The package keeps `swift-tools-version: 5.10` for broader compatibility;
    runtime in `Package.swift`, bump the plugin pin in `buf.gen.yaml`
    to match — mismatches produce ~50 deprecation warnings about
    `init(dictionaryLiteral:)`.
+
+7. **Keyed repeated fields are an AST rewrite, not a decode loop.** The
+   Codable decoder has no descriptor, so `Annotations.expandKeyed` turns each
+   keyed binding into the anonymous list it is equivalent to before the Swift
+   type runs. Any quoted name that survives is outside a keyed block, which is
+   why `rejectQuotedNames` needs no schema. Keys compare by UTF-8 bytes: Swift's
+   `==` is canonical equivalence and would merge two distinct keys.
 
 ## Open gaps (not yet implemented)
 

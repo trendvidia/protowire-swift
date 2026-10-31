@@ -11,9 +11,9 @@ extension PXF {
         case expectedTypeURL(Position, got: TokenKind)
         /// An entry delimiter ('=', ':', or '{') was expected.
         case expectedEntryDelimiter(Position, got: TokenKind)
-        /// A field assignment ('=') had a non-identifier key.
+        /// A field assignment ('=') had a key that is neither an identifier nor a string.
         case fieldAssignmentRequiresIdentifierKey(Position, got: TokenKind, key: String)
-        /// A submessage block ('{') had a non-identifier key.
+        /// A submessage block ('{') had a key that is neither an identifier nor a string.
         case submessageBlockRequiresIdentifierKey(Position, got: TokenKind, key: String)
         /// A map entry (':' form) was used at document top level.
         case mapEntryNotAllowedAtTopLevel(Position)
@@ -55,9 +55,9 @@ extension PXF {
             case .expectedTypeURL(let pos, let got): return "[\(pos)] expected type URL after @type, got \(got.rawValue)"
             case .expectedEntryDelimiter(let pos, let got): return "[\(pos)] expected '=', ':', or '{', got \(got.rawValue)"
             case .fieldAssignmentRequiresIdentifierKey(let pos, let got, let key):
-                return "[\(pos)] field assignment with '=' requires an identifier key, got \(got.rawValue) (\"\(key)\"); use ':' for map entries"
+                return "[\(pos)] field assignment with '=' requires an identifier or string key, got \(got.rawValue) (\"\(key)\"); use ':' for map entries"
             case .submessageBlockRequiresIdentifierKey(let pos, let got, let key):
-                return "[\(pos)] submessage block requires an identifier key, got \(got.rawValue) (\"\(key)\")"
+                return "[\(pos)] submessage block requires an identifier or string key, got \(got.rawValue) (\"\(key)\")"
             case .mapEntryNotAllowedAtTopLevel(let pos):
                 return "[\(pos)] map entry (':' form) is only allowed inside a '{ … }' block; use '=' for top-level field assignments"
             case .expectedValue(let pos, let got): return "[\(pos)] expected value, got \(got.rawValue)"
@@ -418,14 +418,16 @@ extension PXF {
             switch current.kind {
             case .equal:
                 // `=` denotes a field assignment on a proto message; the key
-                // must be an identifier. Map-style keys (string / integer)
-                // are only valid with `:`.
-                guard keyKind == .identifier else {
+                // is an identifier or a string literal (a quoted entry name:
+                // the grammar accepts one everywhere, the schema layer
+                // restricts it to keyed repeated fields). Integer keys are
+                // only valid with `:`.
+                guard keyKind != .number else {
                     throw ParserError.fieldAssignmentRequiresIdentifierKey(pos, got: keyKind, key: key)
                 }
                 advance()
                 let val = try parseValue(depth: depth)
-                return Assignment(pos: pos, key: key, value: val, leadingComments: leading)
+                return Assignment(pos: pos, key: key, value: val, leadingComments: leading, keyQuoted: keyKind == .string)
             case .colon:
                 // Map entry. Only allowed inside a '{ ... }' block, never at
                 // document top level.
@@ -436,15 +438,14 @@ extension PXF {
                 let val = try parseValue(depth: depth)
                 return MapEntry(pos: pos, key: key, value: val, leadingComments: leading)
             case .lbrace:
-                // `{ ... }` denotes a submessage field; same identifier-only
-                // rule as `=` applies.
-                guard keyKind == .identifier else {
+                // `{ ... }` denotes a submessage field; same key rule as `=`.
+                guard keyKind != .number else {
                     throw ParserError.submessageBlockRequiresIdentifierKey(pos, got: keyKind, key: key)
                 }
                 advance()
                 try checkDepth(depth + 1)
                 let entries = try parseBody(depth: depth + 1)
-                return Block(pos: pos, name: key, entries: entries, leadingComments: leading)
+                return Block(pos: pos, name: key, entries: entries, leadingComments: leading, nameQuoted: keyKind == .string)
             default:
                 throw ParserError.expectedEntryDelimiter(current.pos, got: current.kind)
             }
