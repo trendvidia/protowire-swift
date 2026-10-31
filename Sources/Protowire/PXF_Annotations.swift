@@ -24,6 +24,12 @@ extension PXF {
     /// values; a defaulted field is still reported absent by `PXF.Result`,
     /// since it was not in the input.
     ///
+    /// A field carrying both annotations has no single meaning, so draft -01
+    /// ("Required and Default") refuses the schema, whatever a document
+    /// contains. Building an `Annotations` records such a field and does not
+    /// fail; `validateRequiredDefault(message:)` reports it, and `PXFDecoder`
+    /// calls that before it reads a document.
+    ///
     /// The descriptor set must have been parsed with
     /// `Pxf_Annotations_Extensions` (or a map containing it), otherwise the
     /// options are unknown fields and nothing is annotated.
@@ -52,6 +58,13 @@ extension PXF {
         }
 
         private var messages: [String: Message] = [:]
+        /// The file declaring each message.
+        private var messageFiles: [String: String] = [:]
+        /// Per file, the files it imports.
+        private var imports: [String: [String]] = [:]
+        /// Per file, the fields it declares with both annotations. Computed
+        /// once here; a decode only walks the import closure.
+        private var requiredDefaultViolations: [String: [AnnotationError]] = [:]
 
         /// Every message declared in `descriptorSet`, including nested ones.
         public init(descriptorSet: Google_Protobuf_FileDescriptorSet) {
@@ -61,12 +74,20 @@ extension PXF {
         public init(files: [Google_Protobuf_FileDescriptorProto]) {
             for file in files {
                 let prefix = file.package.isEmpty ? "" : file.package + "."
-                for m in file.messageType { index(m, prefix: prefix) }
+                imports[file.name] = file.dependency
+                for m in file.messageType { index(m, prefix: prefix, file: file.name) }
+            }
+            for (fullName, file) in messageFiles.sorted(by: { $0.key < $1.key }) {
+                for field in messages[fullName]?.fields ?? [] where field.required && field.defaultLiteral != nil {
+                    requiredDefaultViolations[file, default: []].append(
+                        .requiredWithDefault(file: file, element: fullName + "." + field.name))
+                }
             }
         }
 
-        private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String) {
+        private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String, file: String) {
             let fullName = prefix + m.name
+            messageFiles[fullName] = file
             let nested = Dictionary(uniqueKeysWithValues: m.nestedType.map { (fullName + "." + $0.name, $0) })
             var fields: [Field] = []
             for fd in m.field {
@@ -83,7 +104,7 @@ extension PXF {
                     defaultLiteral: fd.options.hasPxf_default ? fd.options.Pxf_default : nil))
             }
             messages[fullName] = Message(fullName: fullName, fields: fields)
-            for n in m.nestedType { index(n, prefix: fullName + ".") }
+            for n in m.nestedType { index(n, prefix: fullName + ".", file: file) }
         }
 
         /// The message named `fullName`, or nil when the descriptor set does
@@ -94,6 +115,27 @@ extension PXF {
 
         /// All indexed message names, sorted.
         public var messageNames: [String] { messages.keys.sorted() }
+
+        // MARK: - bind-time checks
+
+        /// Rejects a field with `(pxf.required)` and `(pxf.default)` anywhere
+        /// in the import closure of the file declaring `fullName`, not just
+        /// in that file: a decoder recurses into imported types, and the
+        /// schema must fail whether or not a document reaches them
+        /// (draft -01, "Scope of Bind-Time Checks"). A file outside the
+        /// closure is not this message's schema and is not reported, and an
+        /// import the descriptor set does not contain cannot be checked.
+        /// `(pxf.required) = false` requires nothing and is not a conflict.
+        public func validateRequiredDefault(message fullName: String) throws {
+            guard !requiredDefaultViolations.isEmpty, let root = messageFiles[fullName] else { return }
+            var visited: Set<String> = []
+            var pending = [root]
+            while let file = pending.popLast() {
+                guard visited.insert(file).inserted else { continue }
+                if let first = requiredDefaultViolations[file]?.first { throw first }
+                pending += imports[file] ?? []
+            }
+        }
 
         // MARK: - required
 
@@ -198,6 +240,8 @@ extension PXF {
         case requiredFieldAbsent(path: String)
         /// A `(pxf.default)` literal does not read as the field's type.
         case invalidDefault(field: String, literal: String, reason: String)
+        /// A field carries both `(pxf.required)` and `(pxf.default)`.
+        case requiredWithDefault(file: String, element: String)
 
         public var description: String {
             switch self {
@@ -205,6 +249,10 @@ extension PXF {
                 return "required field \"\(path)\" is absent"
             case .invalidDefault(let field, let literal, let reason):
                 return "invalid default \"\(literal)\" for field \"\(field)\": \(reason)"
+            case .requiredWithDefault(let file, let element):
+                return "\(file): field \"\(element)\": (pxf.required) and (pxf.default) are exclusive on one field: "
+                    + "the first rejects a document where the field is absent, and the second treats it as supplied "
+                    + "(draft -01, \"Required and Default\")"
             }
         }
     }

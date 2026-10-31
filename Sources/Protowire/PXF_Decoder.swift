@@ -36,6 +36,13 @@ public final class PXFDecoder {
         self.rootMessage = rootMessage
     }
 
+    /// The schema checks that do not depend on a document, so they run
+    /// before one is read: a bad schema fails on every input.
+    private func validateSchema() throws {
+        guard let annotations, let root = rootMessage else { return }
+        try annotations.validateRequiredDefault(message: root)
+    }
+
     /// The `(pxf.required)` pass, before the Swift type sees the document:
     /// it covers every field the schema declares, whether or not the type
     /// asks for it (Go's `postDecode` walks the descriptor, not the caller).
@@ -51,6 +58,7 @@ public final class PXFDecoder {
     /// - Returns: The decoded value.
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        try validateSchema()
         let doc = try PXF.Parser(input: data).parseDocument()
         try validateRequired(doc.entries)
         let decoder = _PXFDecoder(entries: doc.entries, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
@@ -64,6 +72,7 @@ public final class PXFDecoder {
     /// - Returns: The decoded value.
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from string: String) throws -> T {
+        try validateSchema()
         let doc = try PXF.Parser(string: string).parseDocument()
         try validateRequired(doc.entries)
         let decoder = _PXFDecoder(entries: doc.entries, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
@@ -77,6 +86,7 @@ public final class PXFDecoder {
     /// - Returns: A tuple containing the decoded value and a `PXF.Result` object.
     /// - Throws: An error if decoding fails.
     public func unmarshalFull<T: Decodable>(_ type: T.Type, from string: String) throws -> (T, PXF.Result) {
+        try validateSchema()
         let doc = try PXF.Parser(string: string).parseDocument()
         try validateRequired(doc.entries)
         var result = PXF.Result()

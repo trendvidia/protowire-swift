@@ -11,6 +11,19 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`(pxf.required)` with `(pxf.default)` on one field is a schema error**
+  (#35), as draft -01 requires (trendvidia/protowire#453). Such a schema used
+  to bind, and the required check won when a document omitted the field. Every
+  decode through `PXFDecoder(annotations:rootMessage:)` now fails with
+  `PXF.AnnotationError.requiredWithDefault`, before the document is read,
+  when the pair is anywhere in the import closure of the file declaring the
+  root message. `PXF.Annotations.validateRequiredDefault(message:)` reports
+  the same thing without a document. `(pxf.required) = false` beside a default
+  stays accepted. `PXF.AnnotationError` gains a case, so an exhaustive `switch`
+  over it needs one more arm.
+
 ### Added
 
 - **`(pxf.required)` and `(pxf.default)` on the Codable decode path**

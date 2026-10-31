@@ -214,6 +214,132 @@ final class PXFAnnotationsTests: XCTestCase {
         XCTAssertNil(try a.defaultValue(for: PXF.Annotations.Field(name: "x", number: 1, type: .int32, typeName: nil, isRepeated: false, isMap: false, required: false, defaultLiteral: nil)))
     }
 
+    // MARK: required with default
+
+    private static func file(_ name: String, package: String = "pair.v1", imports: [String] = [],
+                             _ messages: Google_Protobuf_DescriptorProto...) -> Google_Protobuf_FileDescriptorProto {
+        var f = Google_Protobuf_FileDescriptorProto()
+        f.name = name
+        f.package = package
+        f.dependency = imports
+        f.messageType = messages
+        return f
+    }
+
+    private static func message(_ name: String, _ fields: Google_Protobuf_FieldDescriptorProto...,
+                                nested: [Google_Protobuf_DescriptorProto] = []) -> Google_Protobuf_DescriptorProto {
+        var m = Google_Protobuf_DescriptorProto()
+        m.name = name
+        m.field = fields
+        m.nestedType = nested
+        return m
+    }
+
+    private struct Pair: Codable { var s: String? }
+
+    /// (pxf.required) = true and (pxf.default) = "x" on one string field, in
+    /// a message named `name`.
+    private static func pairMessage(_ name: String) -> Google_Protobuf_DescriptorProto {
+        message(name, field("s", 1, .string, required: true, defaultLiteral: "x"))
+    }
+
+    private func assertPairRejected(_ a: PXF.Annotations, root: String = "pair.v1.M", file: String, element: String,
+                                    line: UInt = #line) {
+        let expected = PXF.AnnotationError.requiredWithDefault(file: file, element: element)
+        XCTAssertThrowsError(try a.validateRequiredDefault(message: root), line: line) { error in
+            XCTAssertEqual(error as? PXF.AnnotationError, expected, line: line)
+        }
+    }
+
+    func testRequiredWithDefaultFailsOnEveryDocument() {
+        let a = PXF.Annotations(files: [Self.file("pair.proto", Self.pairMessage("M"))])
+        let expected = PXF.AnnotationError.requiredWithDefault(file: "pair.proto", element: "pair.v1.M.s")
+        assertPairRejected(a, file: "pair.proto", element: "pair.v1.M.s")
+        let d = PXFDecoder(annotations: a, rootMessage: "pair.v1.M")
+        // Omitting the field, supplying it, and a document that does not
+        // even parse: the verdict is about the schema.
+        for doc in ["", "s = \"y\"", "s = \"y\"\nt = 1", "= not pxf {"] {
+            XCTAssertThrowsError(try d.decode(Pair.self, from: doc), doc) {
+                XCTAssertEqual($0 as? PXF.AnnotationError, expected, doc)
+            }
+            XCTAssertThrowsError(try d.decode(Pair.self, from: Data(doc.utf8)), doc) {
+                XCTAssertEqual($0 as? PXF.AnnotationError, expected, doc)
+            }
+            XCTAssertThrowsError(try d.unmarshalFull(Pair.self, from: doc), doc) {
+                XCTAssertEqual($0 as? PXF.AnnotationError, expected, doc)
+            }
+        }
+    }
+
+    func testRequiredWithDefaultMessageNamesTheFieldAndFollowsGo() {
+        let e = PXF.AnnotationError.requiredWithDefault(file: "pair.proto", element: "pair.v1.M.s")
+        XCTAssertEqual("\(e)", "pair.proto: field \"pair.v1.M.s\": (pxf.required) and (pxf.default) are exclusive on one field: "
+            + "the first rejects a document where the field is absent, and the second treats it as supplied "
+            + "(draft -01, \"Required and Default\")")
+    }
+
+    func testRequiredFalseBesideADefaultIsAccepted() throws {
+        var f = Self.field("s", 1, .string, defaultLiteral: "x")
+        f.options.Pxf_required = false
+        XCTAssertTrue(f.options.hasPxf_required, "the option is set, to false")
+        let a = PXF.Annotations(files: [Self.file("pair.proto", Self.message("M", f))])
+        XCTAssertNoThrow(try a.validateRequiredDefault(message: "pair.v1.M"))
+        let s = try PXFDecoder(annotations: a, rootMessage: "pair.v1.M").decode(Pair.self, from: "")
+        XCTAssertEqual(s.s, "x", "the default still applies")
+    }
+
+    func testAnEmptyDefaultLiteralIsStillADefault() {
+        let m = Self.message("M", Self.field("s", 1, .string, required: true, defaultLiteral: ""))
+        assertPairRejected(PXF.Annotations(files: [Self.file("pair.proto", m)]), file: "pair.proto", element: "pair.v1.M.s")
+    }
+
+    func testRequiredAndDefaultOnSeparateFieldsAreAccepted() {
+        let m = Self.message("M", Self.field("a", 1, .string, required: true), Self.field("b", 2, .string, defaultLiteral: "x"))
+        let a = PXF.Annotations(files: [Self.file("pair.proto", m)])
+        XCTAssertNoThrow(try a.validateRequiredDefault(message: "pair.v1.M"))
+    }
+
+    func testRequiredWithDefaultInANestedMessage() {
+        let m = Self.message("M", nested: [Self.pairMessage("Inner")])
+        let a = PXF.Annotations(files: [Self.file("pair.proto", m)])
+        assertPairRejected(a, file: "pair.proto", element: "pair.v1.M.Inner.s")
+    }
+
+    func testRequiredWithDefaultReachesTheImportClosure() {
+        // No field of M refers to anything in the imported files, and the
+        // pair is two imports away.
+        let files = [
+            Self.file("a.proto", imports: ["b.proto"], Self.message("M")),
+            Self.file("b.proto", package: "other.v1", imports: ["c.proto", "a.proto"], Self.message("Unused")),
+            Self.file("c.proto", package: "other.v1", Self.pairMessage("Deep")),
+        ]
+        let a = PXF.Annotations(files: files)
+        assertPairRejected(a, file: "c.proto", element: "other.v1.Deep.s")
+        // The bound message's own file does not have to contain the pair,
+        // and the violation names the file that declares it.
+        assertPairRejected(a, root: "other.v1.Deep", file: "c.proto", element: "other.v1.Deep.s")
+    }
+
+    func testRequiredWithDefaultOutsideTheClosureIsNotThisSchema() {
+        let files = [
+            Self.file("a.proto", Self.message("M")),
+            Self.file("unrelated.proto", package: "other.v1", imports: ["a.proto"], Self.pairMessage("Elsewhere")),
+        ]
+        let a = PXF.Annotations(files: files)
+        XCTAssertNoThrow(try a.validateRequiredDefault(message: "pair.v1.M"))
+        XCTAssertThrowsError(try a.validateRequiredDefault(message: "other.v1.Elsewhere"))
+    }
+
+    func testRequiredWithDefaultFromSerializedOptions() throws {
+        // The way a real descriptor set arrives: bytes parsed with the
+        // extensions registered, not options set in memory.
+        var fds = Google_Protobuf_FileDescriptorSet()
+        fds.file = [Self.file("pair.proto", Self.pairMessage("M"))]
+        let bytes: Data = try fds.serializedBytes()
+        let parsed = try Google_Protobuf_FileDescriptorSet(serializedBytes: bytes, extensions: Pxf_Annotations_Extensions)
+        assertPairRejected(PXF.Annotations(descriptorSet: parsed), file: "pair.proto", element: "pair.v1.M.s")
+    }
+
     // MARK: off switch
 
     func testWithoutAnnotationsNothingChanges() throws {
