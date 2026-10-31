@@ -47,7 +47,7 @@ labels = {
 Add the following to your `Package.swift` dependencies:
 
 ```swift
-.package(url: "https://github.com/trendvidia/protowire-swift.git", from: "1.0.0")
+.package(url: "https://github.com/trendvidia/protowire-swift.git", from: "1.1.0")
 ```
 
 ## Usage
