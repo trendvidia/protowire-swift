@@ -17,6 +17,17 @@ lockstep across language ports when the wire format changes.
 
 ### Added
 
+- **`pxf.BigInt` literals and `MaxNumericLiteralDigits`** (#17,
+  trendvidia/protowire#279). `Pxf_BigInt` is now `Decodable`: a PXF integer
+  literal decodes to its value, and one with more than
+  `Hardening.maxNumericLiteralDigits` (4096) significant digits throws
+  `DecoderError.numericLiteralTooLong`, naming the limit. Exactly 4096 digits
+  is accepted. Leading zeros and the sign do not count. The message form, a
+  PXF block or PB, is not bounded by the cap.
+- `Pxf_Decimal` and `Pxf_BigFloat` are `Decodable` in the message form only.
+  A PXF literal on either is an error.
+- `check-decode` links `adversarial.v1.BigNumHolder`. It used to refuse the
+  schema by name, so `pxf/long-numeric.pxf` passed without reaching a decoder.
 - **`(pxf.required)` and `(pxf.default)` on the Codable decode path**
   (#11). `PXF.Annotations(descriptorSet:)` indexes the two annotations
   (extension numbers 1314 and 1315) per message from a
@@ -30,6 +41,11 @@ lockstep across language ports when the wire format changes.
   list elements and map values are not annotated, and a defaulted field is
   still reported absent by `PXF.Result`. A decoder without annotations
   behaves exactly as before.
+- `check-decode`'s `Tree` declares `children`, `branches` and `tags`, so the
+  corpus's map rows reach the PB decoder instead of being skipped as unknown
+  fields (trendvidia/protowire#449). The decoders already count a map's `{` and
+  every PB map entry toward `MaxNestingDepth`; `HardeningTests` now pins both
+  sides of that bound.
 - `dump-envelope --pb FDS MESSAGE DOC`, the gate leg protowire's
   `cross_envelope_check.sh` had listed as a declared omission for this port
   (#10): the fixture document is decoded into a hand-mirrored Codable type
