@@ -24,6 +24,12 @@ extension PXF {
     /// values; a defaulted field is still reported absent by `PXF.Result`,
     /// since it was not in the input.
     ///
+    /// A field carrying both annotations has no single meaning, so draft -01
+    /// ("Required and Default") refuses the schema, whatever a document
+    /// contains. Building an `Annotations` records such a field and does not
+    /// fail; `validateRequiredDefault(message:)` reports it, and `PXFDecoder`
+    /// calls that before it reads a document.
+    ///
     /// The descriptor set must have been parsed with
     /// `Pxf_Annotations_Extensions` (or a map containing it), otherwise the
     /// options are unknown fields and nothing is annotated.
@@ -61,6 +67,9 @@ extension PXF {
         private var messageFiles: [String: String] = [:]
         /// Per file, the files it imports.
         private var imports: [String: [String]] = [:]
+        /// Per file, the fields it declares with both annotations. Computed
+        /// once here; a decode only walks the import closure.
+        private var requiredDefaultViolations: [String: [AnnotationError]] = [:]
         /// Per file, the `(pxf.key)` placements it declares that are invalid.
         /// Computed once here; a decode only walks the import closure.
         private var keyViolations: [String: [AnnotationError]] = [:]
@@ -78,6 +87,10 @@ extension PXF {
             }
             for (fullName, file) in messageFiles.sorted(by: { $0.key < $1.key }) {
                 for field in messages[fullName]?.fields ?? [] {
+                    if field.required && field.defaultLiteral != nil {
+                        requiredDefaultViolations[file, default: []].append(
+                            .requiredWithDefault(file: file, element: fullName + "." + field.name))
+                    }
                     if let problem = keyFieldProblem(of: field) {
                         keyViolations[file, default: []].append(.invalidKeyPlacement(
                             file: file, element: fullName + "." + field.name, key: field.keyName ?? "", detail: problem))
@@ -121,7 +134,19 @@ extension PXF {
         /// All indexed message names, sorted.
         public var messageNames: [String] { messages.keys.sorted() }
 
-        // MARK: - key
+        // MARK: - bind-time checks
+
+        /// Rejects a field with `(pxf.required)` and `(pxf.default)` anywhere
+        /// in the import closure of the file declaring `fullName`, not just
+        /// in that file: a decoder recurses into imported types, and the
+        /// schema must fail whether or not a document reaches them
+        /// (draft -01, "Scope of Bind-Time Checks"). A file outside the
+        /// closure is not this message's schema and is not reported, and an
+        /// import the descriptor set does not contain cannot be checked.
+        /// `(pxf.required) = false` requires nothing and is not a conflict.
+        public func validateRequiredDefault(message fullName: String) throws {
+            try throwFirst(of: requiredDefaultViolations, inClosureOf: fullName)
+        }
 
         /// Rejects a misplaced `(pxf.key)` anywhere in the import closure of
         /// the file declaring `fullName`, not just in that file: a decoder
@@ -129,12 +154,16 @@ extension PXF {
         /// wait for a document to exercise it. A file outside the closure is
         /// not this message's schema and is not reported.
         public func validateKeyPlacement(message fullName: String) throws {
-            guard !keyViolations.isEmpty, let root = messageFiles[fullName] else { return }
+            try throwFirst(of: keyViolations, inClosureOf: fullName)
+        }
+
+        private func throwFirst(of violations: [String: [AnnotationError]], inClosureOf fullName: String) throws {
+            guard !violations.isEmpty, let root = messageFiles[fullName] else { return }
             var visited: Set<String> = []
             var pending = [root]
             while let file = pending.popLast() {
                 guard visited.insert(file).inserted else { continue }
-                if let first = keyViolations[file]?.first { throw first }
+                if let first = violations[file]?.first { throw first }
                 pending += imports[file] ?? []
             }
         }
@@ -242,6 +271,8 @@ extension PXF {
         case requiredFieldAbsent(path: String)
         /// A `(pxf.default)` literal does not read as the field's type.
         case invalidDefault(field: String, literal: String, reason: String)
+        /// A field carries both `(pxf.required)` and `(pxf.default)`.
+        case requiredWithDefault(file: String, element: String)
         /// A `(pxf.key)` placement the schema layer must refuse.
         case invalidKeyPlacement(file: String, element: String, key: String, detail: String)
 
@@ -251,6 +282,10 @@ extension PXF {
                 return "required field \"\(path)\" is absent"
             case .invalidDefault(let field, let literal, let reason):
                 return "invalid default \"\(literal)\" for field \"\(field)\": \(reason)"
+            case .requiredWithDefault(let file, let element):
+                return "\(file): field \"\(element)\": (pxf.required) and (pxf.default) are exclusive on one field: "
+                    + "the first rejects a document where the field is absent, and the second treats it as supplied "
+                    + "(draft -01, \"Required and Default\")"
             case .invalidKeyPlacement(let file, let element, let key, let detail):
                 return "\(file): field \"\(element)\": invalid (pxf.key) = \"\(key)\": \(detail) (draft -01 §3.13)"
             }

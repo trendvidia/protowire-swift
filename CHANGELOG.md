@@ -11,6 +11,18 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`(pxf.required)` with `(pxf.default)` on one field is a schema error**
+  (#35), as draft -01 requires (trendvidia/protowire#453). Such a schema used
+  to bind, and the required check won when a document omitted the field. Every
+  decode through `PXFDecoder(annotations:rootMessage:)` now fails with
+  `PXF.AnnotationError.requiredWithDefault`, before the document is read,
+  when the pair is anywhere in the import closure of the file declaring the
+  root message. `PXF.Annotations.validateRequiredDefault(message:)` reports
+  the same thing without a document. `(pxf.required) = false` beside a default
+  stays accepted. `PXF.AnnotationError` gains a case, so an exhaustive `switch`
+  over it needs one more arm.
 ### Changed
 
 - **The vendored shared schemas are re-synced with [trendvidia/protos](https://github.com/trendvidia/protos) v0.1.2** ([trendvidia/protowire#447](https://github.com/trendvidia/protowire/issues/447)). They gain protos' file options, and `envelope.proto`'s `go_package` now names a published package. Declarations and field numbers are unchanged, and so is this port's public API.
