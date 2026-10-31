@@ -12,7 +12,10 @@ final class HardeningTests: XCTestCase {
     final class Tree: Codable {
         var child: Tree?
         var label: String?
-        enum CodingKeys: Int, CodingKey { case child = 1, label = 2 }
+        var children: [Tree]?
+        var branches: [String: Tree]?
+        var tags: [String: String]?
+        enum CodingKeys: Int, CodingKey { case child = 1, label = 2, children = 3, branches = 4, tags = 5 }
     }
 
     struct StringHolder: Codable {
@@ -44,6 +47,26 @@ final class HardeningTests: XCTestCase {
         XCTAssertNoThrow(try PXFDecoder().decode(Tree.self, from: Data(s.utf8)))
     }
 
+    /// A map's `{` is a descent and so is its value's, so 50 `branches` levels
+    /// are exactly the bound (protowire#449).
+    func testPXFCountsAMapsBraceAtTheBound() {
+        func doc(pairs: Int, extra: Int) -> String {
+            String(repeating: "branches = { k: { ", count: pairs) + String(repeating: "child { ", count: extra)
+                + "label = \"x\"" + String(repeating: " }", count: extra) + String(repeating: " } }", count: pairs)
+        }
+        XCTAssertNoThrow(try PXFDecoder().decode(Tree.self, from: doc(pairs: 50, extra: 0)))
+        assertDepthExceeded(try PXFDecoder().decode(Tree.self, from: doc(pairs: 50, extra: 1)))
+    }
+
+    /// A scalar-valued map has no message under it, and its `{` still counts.
+    func testPXFCountsAScalarMapsBraceAtTheBound() {
+        func doc(blocks: Int) -> String {
+            String(repeating: "child { ", count: blocks) + "tags = { k: \"v\" }" + String(repeating: " }", count: blocks)
+        }
+        XCTAssertNoThrow(try PXFDecoder().decode(Tree.self, from: doc(blocks: 99)))
+        assertDepthExceeded(try PXFDecoder().decode(Tree.self, from: doc(blocks: 100)))
+    }
+
     // MARK: - PXF UTF-8 strictness
 
     func testPXFRejectsInvalidUTF8InStringLiteral() {
@@ -69,6 +92,30 @@ final class HardeningTests: XCTestCase {
         }
     }
 
+    /// A map entry is a descent and so is a message value inside it, so 50
+    /// `branches` levels are exactly the bound (protowire#449).
+    func testPBCountsAMapEntryAndItsMessageValueAtTheBound() {
+        func message(pairs: Int, extra: Int) -> Data {
+            var data = Data()
+            for _ in 0..<extra { data = encodeLenDelim(field: 1, payload: data) }
+            for _ in 0..<pairs { data = encodeLenDelim(field: 4, payload: mapEntry(value: data)) }
+            return data
+        }
+        XCTAssertNoThrow(try PBDecoder().decode(Tree.self, from: message(pairs: 50, extra: 0)))
+        assertDepthExceeded(try PBDecoder().decode(Tree.self, from: message(pairs: 50, extra: 1)))
+    }
+
+    /// A scalar-valued entry recurses into nothing, and it is still a descent.
+    func testPBCountsAScalarMapEntryAtTheBound() {
+        func message(submessages: Int) -> Data {
+            var data = encodeLenDelim(field: 5, payload: mapEntry(value: Data("v".utf8)))
+            for _ in 0..<submessages { data = encodeLenDelim(field: 1, payload: data) }
+            return data
+        }
+        XCTAssertNoThrow(try PBDecoder().decode(Tree.self, from: message(submessages: 99)))
+        assertDepthExceeded(try PBDecoder().decode(Tree.self, from: message(submessages: 100)))
+    }
+
     // MARK: - PB length-prefix bounds
 
     func testPBRejectsTruncatedLengthPrefix() {
@@ -85,6 +132,19 @@ final class HardeningTests: XCTestCase {
     }
 
     // MARK: - helpers
+
+    private func assertDepthExceeded<T>(_ expression: @autoclosure () throws -> T, line: UInt = #line) {
+        XCTAssertThrowsError(try expression(), line: line) { err in
+            guard case DecoderError.nestingDepthExceeded = err else {
+                return XCTFail("expected nestingDepthExceeded, got \(err)", line: line)
+            }
+        }
+    }
+
+    /// A `map<string, _>` entry with key "k" and the given length-delimited value.
+    private func mapEntry(value: Data) -> Data {
+        encodeLenDelim(field: 1, payload: Data("k".utf8)) + encodeLenDelim(field: 2, payload: value)
+    }
 
     /// Wraps `payload` as a length-delimited field with tag=`field` (wire=2).
     private func encodeLenDelim(field: Int, payload: Data) -> Data {

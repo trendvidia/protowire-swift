@@ -46,10 +46,16 @@ import Protowire
 final class Tree: Codable {
     var child: Tree?
     var label: String?
+    var children: [Tree]?
+    var branches: [String: Tree]?
+    var tags: [String: String]?
 
     enum CodingKeys: Int, CodingKey {
         case child = 1
         case label = 2
+        case children = 3
+        case branches = 4
+        case tags = 5
     }
 }
 

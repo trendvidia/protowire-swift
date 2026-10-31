@@ -26,6 +26,11 @@ lockstep across language ports when the wire format changes.
   list elements and map values are not annotated, and a defaulted field is
   still reported absent by `PXF.Result`. A decoder without annotations
   behaves exactly as before.
+- `check-decode`'s `Tree` declares `children`, `branches` and `tags`, so the
+  corpus's map rows reach the PB decoder instead of being skipped as unknown
+  fields (trendvidia/protowire#449). The decoders already count a map's `{` and
+  every PB map entry toward `MaxNestingDepth`; `HardeningTests` now pins both
+  sides of that bound.
 - `dump-envelope --pb FDS MESSAGE DOC`, the gate leg protowire's
   `cross_envelope_check.sh` had listed as a declared omission for this port
   (#10): the fixture document is decoded into a hand-mirrored Codable type
