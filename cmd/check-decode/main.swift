@@ -24,7 +24,8 @@
 //                                as FAIL_CRASH verdicts so they can be
 //                                fixed in protowire-swift.
 //
-// The four adversarial types are hand-mirrored as Codable structs.
+// The adversarial types are hand-mirrored as Codable structs, and
+// BigNumHolder as a Decodable one over the library's big-number messages.
 // PXFDecoder's keyed container matches entries by `Key.stringValue`, while
 // PBDecoder's keyed container matches by `Key.intValue` — declaring
 // `enum CodingKeys: Int, CodingKey` with case names matching the proto
@@ -80,6 +81,20 @@ struct BigIntHolder: Codable {
 
     enum CodingKeys: Int, CodingKey {
         case value = 1
+    }
+}
+
+// The arbitrary-precision carriers, so the digit cap is proved on a field
+// only the cap can reject (protowire#279). Case names are the proto's.
+struct BigNumHolder: Decodable {
+    var big_int: Pxf_BigInt?
+    var decimal: Pxf_Decimal?
+    var big_float: Pxf_BigFloat?
+
+    enum CodingKeys: Int, CodingKey {
+        case big_int = 1
+        case decimal = 2
+        case big_float = 3
     }
 }
 
@@ -142,6 +157,7 @@ func pbDecode(_ data: Data, schema: String) throws {
     case "adversarial.v1.StringHolder": _ = try dec.decode(StringHolder.self, from: data)
     case "adversarial.v1.BytesHolder":  _ = try dec.decode(BytesHolder.self, from: data)
     case "adversarial.v1.BigIntHolder": _ = try dec.decode(BigIntHolder.self, from: data)
+    case "adversarial.v1.BigNumHolder": _ = try dec.decode(BigNumHolder.self, from: data)
     default: throw RuntimeError("unknown schema for pb: \(schema)")
     }
 }
@@ -153,6 +169,7 @@ func pxfDecode(_ data: Data, schema: String) throws {
     case "adversarial.v1.StringHolder": _ = try dec.decode(StringHolder.self, from: data)
     case "adversarial.v1.BytesHolder":  _ = try dec.decode(BytesHolder.self, from: data)
     case "adversarial.v1.BigIntHolder": _ = try dec.decode(BigIntHolder.self, from: data)
+    case "adversarial.v1.BigNumHolder": _ = try dec.decode(BigNumHolder.self, from: data)
     default: throw RuntimeError("unknown schema for pxf: \(schema)")
     }
 }
