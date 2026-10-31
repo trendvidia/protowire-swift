@@ -16,11 +16,13 @@ public final class PXFDecoder {
     /// An optional type resolver to handle `@type` directives (e.g., for `google.protobuf.Any`).
     public var typeResolver: PXF.TypeResolver?
 
-    /// Schema annotations — `(pxf.required)` / `(pxf.default)` — indexed
-    /// from a descriptor set. With `rootMessage` also set, decoding rejects
-    /// an absent required field and hands the Swift type a synthesised
-    /// value for an absent defaulted field; see `PXF.Annotations`. Nil
-    /// (the default) leaves decoding exactly as before.
+    /// Schema annotations — `(pxf.required)` / `(pxf.default)` / `(pxf.key)`
+    /// — indexed from a descriptor set. With `rootMessage` also set, decoding
+    /// rejects an absent required field, hands the Swift type a synthesised
+    /// value for an absent defaulted field, and reads keyed repeated fields;
+    /// see `PXF.Annotations`. Nil (the default) leaves decoding exactly as
+    /// before, except that a quoted entry name is rejected: nothing is keyed
+    /// without a schema.
     public var annotations: PXF.Annotations?
 
     /// Fully qualified proto name of the message the document represents,
@@ -36,12 +38,21 @@ public final class PXFDecoder {
         self.rootMessage = rootMessage
     }
 
-    /// The `(pxf.required)` pass, before the Swift type sees the document:
-    /// it covers every field the schema declares, whether or not the type
-    /// asks for it (Go's `postDecode` walks the descriptor, not the caller).
-    private func validateRequired(_ entries: [PXF.Entry]) throws {
-        guard let annotations, let root = rootMessage else { return }
-        try annotations.validateRequired(entries: entries, message: root)
+    /// What the Swift type sees: `entries` with keyed bindings rewritten to
+    /// lists. Then the `(pxf.required)` pass, before the type sees the
+    /// document: it covers every field the schema declares, whether or not
+    /// the type asks for it (Go's `postDecode` walks the descriptor, not the
+    /// caller).
+    private func bind(_ entries: [PXF.Entry]) throws -> [PXF.Entry] {
+        guard let annotations, let root = rootMessage else {
+            try PXF.Annotations.rejectQuotedNames(entries)
+            return entries
+        }
+        try annotations.validateKeyPlacement(message: root)
+        let expanded = try annotations.expandKeyed(entries, message: root)
+        try PXF.Annotations.rejectQuotedNames(expanded)
+        try annotations.validateRequired(entries: expanded, message: root)
+        return expanded
     }
 
     /// Decodes a value of the given type from PXF data.
@@ -52,8 +63,8 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         let doc = try PXF.Parser(input: data).parseDocument()
-        try validateRequired(doc.entries)
-        let decoder = _PXFDecoder(entries: doc.entries, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
+        let entries = try bind(doc.entries)
+        let decoder = _PXFDecoder(entries: entries, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
         return try T(from: decoder)
     }
 
@@ -65,8 +76,8 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from string: String) throws -> T {
         let doc = try PXF.Parser(string: string).parseDocument()
-        try validateRequired(doc.entries)
-        let decoder = _PXFDecoder(entries: doc.entries, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
+        let entries = try bind(doc.entries)
+        let decoder = _PXFDecoder(entries: entries, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
         return try T(from: decoder)
     }
 
@@ -78,7 +89,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func unmarshalFull<T: Decodable>(_ type: T.Type, from string: String) throws -> (T, PXF.Result) {
         let doc = try PXF.Parser(string: string).parseDocument()
-        try validateRequired(doc.entries)
+        let entries = try bind(doc.entries)
         var result = PXF.Result()
         // Surface document-root directives on the result so callers can
         // walk them after decode.
@@ -91,12 +102,12 @@ public final class PXFDecoder {
         // populated [String] / Google_Protobuf_FieldMask if the user's type
         // declares it. Without this, T(from: decoder) runs first and finds an
         // empty result.
-        for entry in doc.entries {
+        for entry in entries {
             if let a = entry as? PXF.Assignment, a.value is PXF.NullVal {
                 result.markNull(path: a.key)
             }
         }
-        let decoder = _PXFDecoder(entries: doc.entries, result: &result, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
+        let decoder = _PXFDecoder(entries: entries, result: &result, typeResolver: typeResolver, annotations: annotations, messageName: rootMessage)
         let value = try T(from: decoder)
         return (value, result)
     }

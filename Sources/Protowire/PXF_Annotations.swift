@@ -4,9 +4,9 @@ import Foundation
 import SwiftProtobuf
 
 extension PXF {
-    /// The schema-side half of `(pxf.required)` = 1314 and `(pxf.default)`
-    /// = 1315 (protowire `proto/pxf/annotations.proto`), indexed from a
-    /// descriptor set for the Codable decoder to consult.
+    /// The schema-side half of `(pxf.required)` = 1314, `(pxf.default)` =
+    /// 1315 and `(pxf.key)` = 1316 (protowire `proto/pxf/annotations.proto`),
+    /// indexed from a descriptor set for the Codable bridge to consult.
     ///
     /// The decoder itself has no descriptor: it matches document entries to
     /// a Swift type's `CodingKeys` by name, and those names are the proto
@@ -40,6 +40,11 @@ extension PXF {
             public var required: Bool
             /// The `(pxf.default)` literal as written in the schema.
             public var defaultLiteral: String?
+            /// The `(pxf.key)` value as written in the schema, valid or not;
+            /// `Annotations.keyField(of:)` resolves a well-placed one.
+            public var keyName: String?
+            /// For a map field, the message its values are, if they are one.
+            public var mapValueMessage: String?
         }
 
         /// One message: its fields by proto name, in declaration order.
@@ -52,6 +57,13 @@ extension PXF {
         }
 
         private var messages: [String: Message] = [:]
+        /// The file declaring each message.
+        private var messageFiles: [String: String] = [:]
+        /// Per file, the files it imports.
+        private var imports: [String: [String]] = [:]
+        /// Per file, the `(pxf.key)` placements it declares that are invalid.
+        /// Computed once here; a decode only walks the import closure.
+        private var keyViolations: [String: [AnnotationError]] = [:]
 
         /// Every message declared in `descriptorSet`, including nested ones.
         public init(descriptorSet: Google_Protobuf_FileDescriptorSet) {
@@ -61,17 +73,29 @@ extension PXF {
         public init(files: [Google_Protobuf_FileDescriptorProto]) {
             for file in files {
                 let prefix = file.package.isEmpty ? "" : file.package + "."
-                for m in file.messageType { index(m, prefix: prefix) }
+                imports[file.name] = file.dependency
+                for m in file.messageType { index(m, prefix: prefix, file: file.name) }
+            }
+            for (fullName, file) in messageFiles.sorted(by: { $0.key < $1.key }) {
+                for field in messages[fullName]?.fields ?? [] {
+                    if let problem = keyFieldProblem(of: field) {
+                        keyViolations[file, default: []].append(.invalidKeyPlacement(
+                            file: file, element: fullName + "." + field.name, key: field.keyName ?? "", detail: problem))
+                    }
+                }
             }
         }
 
-        private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String) {
+        private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String, file: String) {
             let fullName = prefix + m.name
+            messageFiles[fullName] = file
             let nested = Dictionary(uniqueKeysWithValues: m.nestedType.map { (fullName + "." + $0.name, $0) })
             var fields: [Field] = []
             for fd in m.field {
                 let typeName = fd.typeName.hasPrefix(".") ? String(fd.typeName.dropFirst()) : (fd.typeName.isEmpty ? nil : fd.typeName)
-                let isMap = fd.type == .message && typeName.flatMap { nested[$0]?.options.mapEntry } == true
+                let mapEntry = fd.type == .message ? typeName.flatMap { nested[$0] } : nil
+                let isMap = mapEntry?.options.mapEntry == true
+                let mapValue = isMap ? mapEntry?.field.first { $0.number == 2 } : nil
                 fields.append(Field(
                     name: fd.name,
                     number: fd.number,
@@ -80,10 +104,12 @@ extension PXF {
                     isRepeated: fd.label == .repeated,
                     isMap: isMap,
                     required: fd.options.hasPxf_required && fd.options.Pxf_required,
-                    defaultLiteral: fd.options.hasPxf_default ? fd.options.Pxf_default : nil))
+                    defaultLiteral: fd.options.hasPxf_default ? fd.options.Pxf_default : nil,
+                    keyName: fd.options.hasPxf_key ? fd.options.Pxf_key : nil,
+                    mapValueMessage: mapValue?.type == .message ? mapValue?.typeName.drop { $0 == "." }.description : nil))
             }
             messages[fullName] = Message(fullName: fullName, fields: fields)
-            for n in m.nestedType { index(n, prefix: fullName + ".") }
+            for n in m.nestedType { index(n, prefix: fullName + ".", file: file) }
         }
 
         /// The message named `fullName`, or nil when the descriptor set does
@@ -94,6 +120,24 @@ extension PXF {
 
         /// All indexed message names, sorted.
         public var messageNames: [String] { messages.keys.sorted() }
+
+        // MARK: - key
+
+        /// Rejects a misplaced `(pxf.key)` anywhere in the import closure of
+        /// the file declaring `fullName`, not just in that file: a decoder
+        /// recurses into imported types, and a dead annotation there must not
+        /// wait for a document to exercise it. A file outside the closure is
+        /// not this message's schema and is not reported.
+        public func validateKeyPlacement(message fullName: String) throws {
+            guard !keyViolations.isEmpty, let root = messageFiles[fullName] else { return }
+            var visited: Set<String> = []
+            var pending = [root]
+            while let file = pending.popLast() {
+                guard visited.insert(file).inserted else { continue }
+                if let first = keyViolations[file]?.first { throw first }
+                pending += imports[file] ?? []
+            }
+        }
 
         // MARK: - required
 
@@ -198,6 +242,8 @@ extension PXF {
         case requiredFieldAbsent(path: String)
         /// A `(pxf.default)` literal does not read as the field's type.
         case invalidDefault(field: String, literal: String, reason: String)
+        /// A `(pxf.key)` placement the schema layer must refuse.
+        case invalidKeyPlacement(file: String, element: String, key: String, detail: String)
 
         public var description: String {
             switch self {
@@ -205,6 +251,8 @@ extension PXF {
                 return "required field \"\(path)\" is absent"
             case .invalidDefault(let field, let literal, let reason):
                 return "invalid default \"\(literal)\" for field \"\(field)\": \(reason)"
+            case .invalidKeyPlacement(let file, let element, let key, let detail):
+                return "\(file): field \"\(element)\": invalid (pxf.key) = \"\(key)\": \(detail) (draft -01 §3.13)"
             }
         }
     }

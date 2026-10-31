@@ -172,14 +172,19 @@ extension PXF {
 
     public struct Assignment: Entry, Equatable {
         public var pos: Position
+        /// The entry name, unquoted.
         public var key: String
         public var value: Value
         public var leadingComments: [Comment]
         public var trailingComment: String?
+        /// True when the source wrote the name as a string literal. The
+        /// grammar accepts one anywhere; a schema layer rejects it outside a
+        /// keyed repeated field's block (draft -01 "Keyed Repeated Fields").
+        public var keyQuoted: Bool = false
 
         public static func == (lhs: Assignment, rhs: Assignment) -> Bool {
             return lhs.pos.line == rhs.pos.line && lhs.pos.column == rhs.pos.column &&
-                   lhs.key == rhs.key && lhs.value.isEqual(to: rhs.value) &&
+                   lhs.key == rhs.key && lhs.keyQuoted == rhs.keyQuoted && lhs.value.isEqual(to: rhs.value) &&
                    lhs.leadingComments == rhs.leadingComments && lhs.trailingComment == rhs.trailingComment
         }
     }
@@ -200,13 +205,17 @@ extension PXF {
 
     public struct Block: Entry, Equatable {
         public var pos: Position
+        /// The entry name, unquoted.
         public var name: String
         public var entries: [Entry]
         public var leadingComments: [Comment]
+        /// True when the source wrote the name as a string literal; see
+        /// `Assignment.keyQuoted`.
+        public var nameQuoted: Bool = false
 
         public static func == (lhs: Block, rhs: Block) -> Bool {
             guard lhs.pos.line == rhs.pos.line && lhs.pos.column == rhs.pos.column &&
-                  lhs.name == rhs.name && lhs.leadingComments == rhs.leadingComments &&
+                  lhs.name == rhs.name && lhs.nameQuoted == rhs.nameQuoted && lhs.leadingComments == rhs.leadingComments &&
                   lhs.entries.count == rhs.entries.count else { return false }
             
             for i in 0..<lhs.entries.count {

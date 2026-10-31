@@ -63,9 +63,12 @@ public struct Pxf_Decimal: Sendable {
   public init() {}
 }
 
-/// Arbitrary-precision binary floating point.
+/// Arbitrary-precision binary floating point: value = (-1)^negative × mantissa × 2^exponent,
+/// rounded to prec bits.
 /// Wire: unsigned big-endian integer mantissa + binary exponent + precision + sign flag.
-/// PXF text: float literal with arbitrary mantissa precision.
+/// PXF text: numeric literal with a precision suffix, "p" and a bit count
+/// (e.g. "0.10000000000000001p53"), read at that precision, or at 256 bits
+/// without one. See draft -01 § PXF Annotations.
 public struct Pxf_BigFloat: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
