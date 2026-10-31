@@ -11,6 +11,8 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+## [1.1.0]
+
 ### Fixed
 
 - **`(pxf.required)` with `(pxf.default)` on one field is a schema error**
