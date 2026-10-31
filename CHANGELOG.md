@@ -13,6 +13,17 @@ lockstep across language ports when the wire format changes.
 
 ### Added
 
+- **`pxf.BigInt` literals and `MaxNumericLiteralDigits`** (#17,
+  trendvidia/protowire#279). `Pxf_BigInt` is now `Decodable`: a PXF integer
+  literal decodes to its value, and one with more than
+  `Hardening.maxNumericLiteralDigits` (4096) significant digits throws
+  `DecoderError.numericLiteralTooLong`, naming the limit. Exactly 4096 digits
+  is accepted. Leading zeros and the sign do not count. The message form, a
+  PXF block or PB, is not bounded by the cap.
+- `Pxf_Decimal` and `Pxf_BigFloat` are `Decodable` in the message form only.
+  A PXF literal on either is an error.
+- `check-decode` links `adversarial.v1.BigNumHolder`. It used to refuse the
+  schema by name, so `pxf/long-numeric.pxf` passed without reaching a decoder.
 - **`(pxf.required)` and `(pxf.default)` on the Codable decode path**
   (#11). `PXF.Annotations(descriptorSet:)` indexes the two annotations
   (extension numbers 1314 and 1315) per message from a
