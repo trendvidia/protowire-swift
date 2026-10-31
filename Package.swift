@@ -36,6 +36,7 @@ let package = Package(
         .testTarget(
             name: "ProtowireTests",
             dependencies: ["Protowire"],
+            resources: [.copy("testdata")],
             swiftSettings: sharedSwiftSettings),
         // Cross-port harness binaries. These produce JSON output the spec
         // repo's `scripts/cross_*_bench.sh` aggregates.

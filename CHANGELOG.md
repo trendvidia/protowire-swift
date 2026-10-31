@@ -23,9 +23,34 @@ lockstep across language ports when the wire format changes.
   the same thing without a document. `(pxf.required) = false` beside a default
   stays accepted. `PXF.AnnotationError` gains a case, so an exhaustive `switch`
   over it needs one more arm.
+### Changed
+
+- **The vendored shared schemas are re-synced with [trendvidia/protos](https://github.com/trendvidia/protos) v0.1.2** ([trendvidia/protowire#447](https://github.com/trendvidia/protowire/issues/447)). They gain protos' file options, and `envelope.proto`'s `go_package` now names a published package. Declarations and field numbers are unchanged, and so is this port's public API.
 
 ### Added
 
+- **Quoted entry names and keyed repeated fields** (draft `-01` "Keyed Repeated
+  Fields"; [#7](https://github.com/trendvidia/protowire-swift/issues/7),
+  [trendvidia/protowire#116](https://github.com/trendvidia/protowire/issues/116)).
+  The grammar accepts a string as an entry name anywhere (`field_entry =
+  (identifier | string), (assignment_tail | block_tail)`); `Assignment.keyQuoted`
+  and `Block.nameQuoted` record it, and `PXF.Format.formatDocument` reproduces
+  it. `(pxf.key)` = 1316 is back in the vendored annotations and indexed by
+  `PXF.Annotations`, which rejects a misplaced one across the bound file's import
+  closure (`validateKeyPlacement`, also run by the decoder and encoder). With
+  annotations, `PXFDecoder` reads the keyed block form, in either spelling and
+  concatenated across bindings, and rejects duplicate names (compared unquoted,
+  byte for byte), the empty key in either form and a disagreeing key assignment;
+  a quoted name anywhere else is rejected, with or without a schema.
+  `PXFEncoder(annotations:rootMessage:)` writes the keyed form whenever every key
+  is present, non-empty and distinct, unquoted exactly when identifier-safe, and
+  the anonymous list otherwise. `Annotations.canonicalizeKeyed` is the schema half
+  of `pxf fmt`: anonymous to keyed where eligible, `name = { }` to `name { }`,
+  identifier-safe names unquoted, redundant key assignments dropped. The spec
+  repo's `testdata/keyed/` corpus is vendored and driven by `PXFKeyedTests`.
+  This port has no tolerant parse mode, so the keyed errors are always hard
+  failures. Wire output is unchanged: a keyed field is a plain repeated field in
+  `pb`.
 - **`pxf.BigInt` literals and `MaxNumericLiteralDigits`** (#17,
   trendvidia/protowire#279). `Pxf_BigInt` is now `Decodable`: a PXF integer
   literal decodes to its value, and one with more than

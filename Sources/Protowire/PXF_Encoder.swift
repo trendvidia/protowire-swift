@@ -23,7 +23,22 @@ public final class PXFEncoder {
     public var indent: String = "  "
     public var emitDefaults: Bool = false
 
+    /// Schema annotations; with `rootMessage` also set, a `(pxf.key)` field
+    /// is written in the keyed block form whenever every element's key is
+    /// present, non-empty and distinct, and as an anonymous list otherwise.
+    /// Nil (the default) leaves encoding exactly as before.
+    public var annotations: PXF.Annotations?
+
+    /// Fully qualified proto name of the message being encoded.
+    public var rootMessage: String?
+
     public init() {}
+
+    /// Initializes an encoder that applies `annotations` from `rootMessage` down.
+    public init(annotations: PXF.Annotations, rootMessage: String) {
+        self.annotations = annotations
+        self.rootMessage = rootMessage
+    }
 
     /// Returns a PXF-quoted version of `s` — wraps it in double quotes and
     /// escapes `\"`, `\\`, `\n`, `\r`, `\t`, plus emits `\xHH` for control
@@ -65,7 +80,10 @@ public final class PXFEncoder {
     }
 
     public func encode<T: Encodable>(_ value: T) throws -> String {
-        let encoder = _PXFEncoder(indent: indent, emitDefaults: emitDefaults)
+        if let annotations, let rootMessage {
+            try annotations.validateKeyPlacement(message: rootMessage)
+        }
+        let encoder = _PXFEncoder(indent: indent, emitDefaults: emitDefaults, annotations: annotations, messageName: rootMessage)
         try value.encode(to: encoder)
         
         // Handle top-level _null if it was a struct/class
@@ -98,11 +116,45 @@ private final class _PXFEncoder: Swift.Encoder {
     let indent: String
     let emitDefaults: Bool
     var isSingleValue: Bool = false
+    /// Schema annotations and the proto message being written; nil when the
+    /// caller gave none, or below a value the schema does not describe.
+    let annotations: PXF.Annotations?
+    let messageName: String?
+    /// How an element of a keyed field treats its own key field: the keyed
+    /// form moves it to the entry name, and the anonymous form cannot carry
+    /// it empty, since a decoder rejects an explicit empty key.
+    enum KeyHandling { case capture(field: String), dropEmpty(field: String) }
+    let keyHandling: KeyHandling?
+    var capturedKey: String?
 
-    init(indent: String, emitDefaults: Bool, codingPath: [CodingKey] = []) {
+    init(indent: String, emitDefaults: Bool, codingPath: [CodingKey] = [],
+         annotations: PXF.Annotations? = nil, messageName: String? = nil, keyHandling: KeyHandling? = nil) {
         self.indent = indent
         self.emitDefaults = emitDefaults
         self.codingPath = codingPath
+        self.annotations = annotations
+        self.messageName = messageName
+        self.keyHandling = keyHandling
+    }
+
+    /// The schema field behind `key`, when this container has a message.
+    func field(for key: CodingKey) -> PXF.Annotations.Field? {
+        guard let annotations, let messageName else { return nil }
+        return annotations.message(messageName)?.field(named: key.stringValue)
+    }
+
+    /// Whether the string `value` of field `key` is left out of the output,
+    /// because the enclosing keyed field has dealt with it.
+    func consumesKey(_ value: String, forKey key: CodingKey) -> Bool {
+        switch keyHandling {
+        case .capture(let field) where field == key.stringValue:
+            capturedKey = value
+            return true
+        case .dropEmpty(let field) where field == key.stringValue:
+            return value.isEmpty
+        default:
+            return false
+        }
     }
 
     func container<Key>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> where Key: CodingKey {
@@ -132,6 +184,7 @@ private final class _PXFEncoder: Swift.Encoder {
         }
 
         mutating func encode(_ value: String, forKey key: Key) throws {
+            if encoder.consumesKey(value, forKey: key) { return }
             writeIndent()
             encoder.output += "\(key.stringValue) = \(PXFEncoder.quote(value))\n"
         }
@@ -183,6 +236,13 @@ private final class _PXFEncoder: Swift.Encoder {
 
             let mirror = Mirror(reflecting: value)
 
+            if mirror.displayStyle == .collection, let field = encoder.field(for: key),
+               let keyField = encoder.annotations?.keyField(of: field) {
+                try encodeKeyed(mirror.children.compactMap { $0.value as? Encodable },
+                                field: field, keyName: keyField.name, forKey: key)
+                return
+            }
+
             // Wrapper sugar: only the nine SwiftProtobuf-generated wrapper
             // types (Google_Protobuf_{Double,Float,Int64,UInt64,Int32,UInt32,
             // Bool,String,Bytes}Value) get inlined as `key = innerValue`.
@@ -214,7 +274,10 @@ private final class _PXFEncoder: Swift.Encoder {
                     }
                 }
                 
-                let sub = _PXFEncoder(indent: encoder.indent, emitDefaults: encoder.emitDefaults, codingPath: codingPath + [key])
+                let f = encoder.field(for: key)
+                let message = (f?.type == .message && f?.isRepeated == false && f?.isMap == false) ? f?.typeName : nil
+                let sub = _PXFEncoder(indent: encoder.indent, emitDefaults: encoder.emitDefaults, codingPath: codingPath + [key],
+                                      annotations: message == nil ? nil : encoder.annotations, messageName: message)
                 try value.encode(to: sub)
                 
                 if sub.isSingleValue {
@@ -258,6 +321,67 @@ private final class _PXFEncoder: Swift.Encoder {
             encoder.output += sub.output
             writeIndent()
             encoder.output += "}\n"
+        }
+
+        /// Writes a `(pxf.key)` field: the keyed block form when every key is
+        /// present, non-empty and distinct, the anonymous list otherwise. An
+        /// entry body and a list element sit at the same depth, so one
+        /// encoder path serves both.
+        private mutating func encodeKeyed(_ elements: [Encodable], field: PXF.Annotations.Field,
+                                          keyName: String, forKey key: Key) throws {
+            if elements.isEmpty {
+                if encoder.emitDefaults {
+                    writeIndent()
+                    encoder.output += "\(key.stringValue) = []\n"
+                }
+                return
+            }
+            let name = key.stringValue
+            let path = codingPath + [key, PXFKey(index: 0)]
+            func elementEncoder(_ handling: _PXFEncoder.KeyHandling) -> _PXFEncoder {
+                _PXFEncoder(indent: encoder.indent, emitDefaults: encoder.emitDefaults, codingPath: path,
+                            annotations: encoder.annotations, messageName: field.typeName, keyHandling: handling)
+            }
+
+            var seen = Set<[UInt8]>()
+            var entries: [(key: String, body: String)] = []
+            for element in elements {
+                let sub = elementEncoder(.capture(field: keyName))
+                try element.encode(to: sub)
+                // Bytes, not String ==: canonically equivalent keys are distinct.
+                guard let k = sub.capturedKey, !k.isEmpty, seen.insert(Array(k.utf8)).inserted else {
+                    entries = []
+                    break
+                }
+                entries.append((k, sub.output))
+            }
+
+            if !entries.isEmpty {
+                writeIndent()
+                encoder.output += "\(name) {\n"
+                for entry in entries {
+                    writeIndent(level: 1)
+                    encoder.output += "\(PXF.Format.canonicalEntryName(entry.key)) {\n\(entry.body)"
+                    writeIndent(level: 1)
+                    encoder.output += "}\n"
+                }
+                writeIndent()
+                encoder.output += "}\n"
+                return
+            }
+
+            writeIndent()
+            encoder.output += "\(name) = [\n"
+            for (i, element) in elements.enumerated() {
+                let sub = elementEncoder(.dropEmpty(field: keyName))
+                try element.encode(to: sub)
+                writeIndent(level: 1)
+                encoder.output += "{\n\(sub.output)"
+                writeIndent(level: 1)
+                encoder.output += i + 1 < elements.count ? "},\n" : "}\n"
+            }
+            writeIndent()
+            encoder.output += "]\n"
         }
 
         private func writeIndent(level: Int = 0) {

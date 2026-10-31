@@ -31,7 +31,7 @@ extension PXF {
                 if let a = entry as? Assignment {
                     writeComments(a.leadingComments, level: level, into: &out)
                     writeIndent(level, into: &out)
-                    out += "\(a.key) = "
+                    out += "\(entryName(a.key, quoted: a.keyQuoted)) = "
                     formatValue(a.value, level: level, into: &out)
                     if let trailing = a.trailingComment, !trailing.isEmpty {
                         out += " \(trailing)"
@@ -54,12 +54,19 @@ extension PXF {
                 } else if let b = entry as? Block {
                     writeComments(b.leadingComments, level: level, into: &out)
                     writeIndent(level, into: &out)
-                    out += "\(b.name) {\n"
+                    out += "\(entryName(b.name, quoted: b.nameQuoted)) {\n"
                     formatEntries(b.entries, level: level + 1, into: &out)
                     writeIndent(level, into: &out)
                     out += "}\n"
                 }
             }
+        }
+
+        /// An entry name as the source spelled it: this formatter has no
+        /// schema, so a quoted name stays quoted. `canonicalizeKeyed` is what
+        /// unquotes one.
+        private static func entryName(_ name: String, quoted: Bool) -> String {
+            quoted ? PXFEncoder.quote(name) : name
         }
 
         private static func formatValue(_ value: Value, level: Int, into out: inout String) {
