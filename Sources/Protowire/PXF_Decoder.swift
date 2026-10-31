@@ -427,7 +427,7 @@ extension _PXFUnkeyedDecoder: SingleValueDecodingContainer {
     func decode<T: Decodable>(_ t: T.Type) throws -> T { return try T(from: self) }
 }
 
-private final class _PXFSingleValueDecoder: Swift.Decoder {
+private final class _PXFSingleValueDecoder: Swift.Decoder, _PXFValueHolder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]; let value: PXF.Value
     init(value: PXF.Value, codingPath: [CodingKey] = []) { self.value = value; self.codingPath = codingPath }
     
