@@ -120,6 +120,8 @@ result.isNull("tags")     // true
 result.isAbsent("enabled") // true
 ```
 
+A path names the field from the document root: `limits.max`, `regions[0].name`. A keyed entry's name counts as setting its key field.
+
 #### Heterogeneous Data with google.protobuf.Any
 
 Use the `TypeResolver` to decode `Any` fields in PXF.
