@@ -18,6 +18,47 @@ lockstep across language ports when the wire format changes.
   parse verdicts, schema-bound decode verdicts and formatted text, for 250
   documents. `conformance/README.md` explains the record, the ledger of known
   disagreements, and how to refresh them.
+- **`PXF.Parser` reads every form in the spec's syntax corpus.** The parse leg
+  of the comparison above goes from 68 disagreements to 0.
+  - Duration literals with a fraction, `µs` or a sign, such as `1.5ms` and
+    `-312.5µs` ([#8](https://github.com/trendvidia/protowire-swift/issues/8)),
+    which is what other ports write for a measured latency. U+03BC is not a
+    unit, and a duration past 64-bit nanoseconds is an error.
+  - The type entry of an `Any` block, `@type = "..."` as a block's first entry
+    ([#22](https://github.com/trendvidia/protowire-swift/issues/22)). It is in
+    `typeURL` on `PXF.Block` and `PXF.BlockVal`, and not in `entries`.
+  - List and block cells, and dotted column paths, in a `@dataset`
+    ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
+    [#23](https://github.com/trendvidia/protowire-swift/issues/23)). A header
+    that names a path twice, a field beside a path inside it, or an empty path
+    segment is rejected at that column.
+  - `true:` and `false:` as map keys. `PXF.MapEntry.keyKind` records how a key
+    was spelled.
+  - A `p<prec>` suffix on a number stays in `IntVal.raw` / `FloatVal.raw`
+    ([#26](https://github.com/trendvidia/protowire-swift/issues/26)). No value
+    is computed from it yet.
+  - A comment on the same line, after a value, is that entry's `trailingComment`.
+  - `b"..."` accepts URL-safe and unpadded base64.
+
+### Changed
+
+- **`PXF.Parser` rejects what the grammar does.** A raw line feed in a simple
+  string, in a `@dataset` cell too
+  ([#24](https://github.com/trendvidia/protowire-swift/issues/24)); an
+  unterminated block comment, triple-quoted string or bytes literal; invalid
+  base64 at the literal; a `+` on anything but `+inf`.
+- **The `@type <identifier>` value prefix is gone**
+  ([#22](https://github.com/trendvidia/protowire-swift/issues/22)). It was never
+  in the grammar. Write `payload = { @type = "<url>" ... }`.
+- **A triple-quoted string is dedented**
+  ([#24](https://github.com/trendvidia/protowire-swift/issues/24)): the line feed
+  after the opening quotes goes, and when the closing quotes sit on their own
+  line, that line goes and its indent is stripped from the others.
+- **A comment keeps its text.** A block comment's `Comment.text` now includes
+  `/*` and `*/`, as a line comment's includes its marker, and non-ASCII comments
+  and triple-quoted strings are no longer garbled.
+- `PXF.ParserError` loses `datasetDottedColumn` and `datasetCellRejected` and
+  gains `datasetColumn` and `lexical`, so an exhaustive `switch` needs updating.
 
 ### Fixed
 

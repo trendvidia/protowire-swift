@@ -329,7 +329,8 @@ final class PXFTests: XCTestCase {
         }
         
         let input = """
-        content = @type example.v1.Simple {
+        content = {
+                @type = "example.v1.Simple"
             name = "Protowire"
         }
         """
