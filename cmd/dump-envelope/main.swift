@@ -8,6 +8,7 @@
 //   dump-envelope                        canonical Envelope → pb hex
 //   dump-envelope --sbe FDS MESSAGE DOC  PXF DOC decoded against MESSAGE in FDS → SBE hex
 //   dump-envelope --pb  FDS MESSAGE DOC  PXF DOC decoded against MESSAGE in FDS → pb hex
+//   dump-envelope --vector NAME          a wire vector of testdata/envelope/ → pb hex
 //
 // --pb is how the gate proves this port reads (pxf.required) = 1314 and
 // (pxf.default) = 1315: `PXF.Annotations` indexes them from the descriptor
@@ -28,7 +29,8 @@
 //
 // Exit 0 with hex on stdout; 1 with "reject: <reason>" on stderr when the
 // document cannot be decoded against the message; 2 for anything that is
-// the harness's fault.
+// the harness's fault; 3 with "not-implemented: <name>" on stderr for a
+// vector this port has not built.
 
 import Foundation
 import Protowire
@@ -53,6 +55,29 @@ func dumpEnvelope() throws {
                        error: ae)
 
     print(hex(try PBEncoder().encode(env)))
+}
+
+/// `Envelope { error { metadata { key: "" value: "" } } }`, by the `pb` codec.
+/// The two structs name only the fields the vector sets, because `Envelope`
+/// and `AppError` hold non-optional fields that `PBEncoder` writes at zero
+/// (protowire-swift#14).
+struct ZeroMapEntryVector: Encodable {
+    struct Error: Encodable {
+        var metadata: [String: String]
+        enum CodingKeys: Int, CodingKey { case metadata = 5 }
+    }
+    var error: Error
+    enum CodingKeys: Int, CodingKey { case error = 4 }
+}
+
+func dumpVector(_ name: String) throws {
+    switch name {
+    case "zero-map-entry":
+        print(hex(try PBEncoder().encode(ZeroMapEntryVector(error: .init(metadata: ["": ""])))))
+    default:
+        FileHandle.standardError.write(Data("not-implemented: \(name)\n".utf8))
+        exit(3)
+    }
 }
 
 /// Enum value names for every enum in a file, keyed by fully-qualified
@@ -287,10 +312,12 @@ let args = Array(CommandLine.arguments.dropFirst())
 do {
     if args.isEmpty {
         try dumpEnvelope()
+    } else if args.count == 2, args[0] == "--vector" {
+        try dumpVector(args[1])
     } else if args.count == 4, args[0] == "--pb" || args[0] == "--sbe" {
         try dumpFixture(mode: args[0], fdsPath: args[1], message: args[2], docPath: args[3])
     } else {
-        fatal(2, "usage: dump-envelope [--pb|--sbe FDS MESSAGE DOC]")
+        fatal(2, "usage: dump-envelope [--pb|--sbe FDS MESSAGE DOC | --vector NAME]")
     }
 } catch {
     fatal(2, "\(error)")
