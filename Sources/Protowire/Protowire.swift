@@ -123,7 +123,7 @@ public enum Protowire {
     /// - Returns: A tuple containing the decoded value and the number of bytes consumed (always 4), or `nil` if the data is too short.
     public static func consumeFixed32(_ data: Data) -> (value: UInt32, length: Int)? {
         guard data.count >= 4 else { return nil }
-        let value = data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt32.self) }
+        let value = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) }
         return (UInt32(littleEndian: value), 4)
     }
 
@@ -140,7 +140,7 @@ public enum Protowire {
     /// - Returns: A tuple containing the decoded value and the number of bytes consumed (always 8), or `nil` if the data is too short.
     public static func consumeFixed64(_ data: Data) -> (value: UInt64, length: Int)? {
         guard data.count >= 8 else { return nil }
-        let value = data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt64.self) }
+        let value = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt64.self) }
         return (UInt64(littleEndian: value), 8)
     }
 

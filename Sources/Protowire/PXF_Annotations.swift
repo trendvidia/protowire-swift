@@ -261,6 +261,11 @@ extension PXF {
                 defaultProblem: annotated.defaultProblem)
         }
 
+        /// The name enum `name` gives `number`, the first when two share it.
+        func enumName(_ name: String?, number: Int32) -> String? {
+            name.flatMap { enums[$0] }?.filter { $0.value == number }.keys.sorted().first
+        }
+
         /// The value of enum `name` called `value`.
         func enumNumber(_ name: String?, value: String) -> Int32? {
             name.flatMap { enums[$0]?[value] }

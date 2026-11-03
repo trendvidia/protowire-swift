@@ -244,7 +244,7 @@ final class PXFTests: XCTestCase {
         
         let encoder = PXFEncoder()
         let output = try encoder.encode(msg)
-        XCTAssertTrue(output.contains("ts = 2026-04-29T21:00:00.000Z"))
+        XCTAssertTrue(output.contains("ts = 2026-04-29T21:00:00Z"), output)
     }
 
     func testUnmarshalFull() throws {
@@ -372,7 +372,7 @@ final class PXFTests: XCTestCase {
         struct Message: Codable, Equatable { var label: UserWrapper }
 
         let output = try PXFEncoder().encode(Message(label: UserWrapper(value: "hello")))
-        XCTAssertTrue(output.contains("label = {"), "got: \(output)")
+        XCTAssertTrue(output.contains("label {"), "got: \(output)")
         XCTAssertTrue(output.contains("value = \"hello\""), "got: \(output)")
     }
 

@@ -118,6 +118,12 @@ record with `conformance/update.sh`.
    in protowire-go. `BoundMessage` stays internal: the Codable bridge remains
    the public API, and the bytes exist so `ConformanceTests` can compare them.
 
+9. **The encoder builds a tree, and one function renders it.** `PXFEncoder`
+   turns a value into a `PXFNode`, and `PXFRenderer` writes the text, which is
+   where a schema changes the output. `PXF_BoundText.swift` puts a `BoundMessage`
+   through the same containers a user's type uses, so the `text` leg of
+   `ConformanceTests` exercises the real encoder.
+
 ## Open gaps (not yet implemented)
 
 - **The remaining bind-time checks.** `validateSchema` covers `(pxf.key)`,
