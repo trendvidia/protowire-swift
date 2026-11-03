@@ -11,11 +11,46 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **A decoder with a schema now enforces the draft's binding rules across the
+  whole document**, whatever the Swift type asks for. `PXFDecoder(annotations:rootMessage:)`
+  rejects a singular field or a map key bound twice
+  ([#25](https://github.com/trendvidia/protowire-swift/issues/25),
+  [#27](https://github.com/trendvidia/protowire-swift/issues/27)), a second oneof
+  member, `null` where the field has no unset state
+  ([#24](https://github.com/trendvidia/protowire-swift/issues/24)), a body that undoes
+  a keyed entry's name ([#44](https://github.com/trendvidia/protowire-swift/issues/44)),
+  a bare identifier on a string field, an unknown field, and a type entry that
+  doesn't resolve ([#22](https://github.com/trendvidia/protowire-swift/issues/22)).
+  **Documents and schemas this port used to accept can now fail.** Set
+  `discardUnknown` to keep skipping unknown fields.
+- `(pxf.required)` and `(pxf.default)` apply in every message body: list
+  elements, map values and `Any` bodies
+  ([#41](https://github.com/trendvidia/protowire-swift/issues/41)). A oneof
+  member's default stays off when a sibling is present.
+- Without a schema, the Codable path also rejects a singular field or a map key
+  bound twice, concatenates repeated bindings and merges a map's bindings
+  ([#33](https://github.com/trendvidia/protowire-swift/issues/33)). It can't reject
+  a bare identifier there, because a Swift enum decodes from one.
+
+### Fixed
+
+- A `[String: T]` of messages keeps its values
+  ([#28](https://github.com/trendvidia/protowire-swift/issues/28)), and a map's keys
+  can be any integer type or `Bool`.
+- An out-of-range integer throws instead of trapping the process, and a list
+  element of the wrong type throws instead of decoding as zero.
+
 ### Added
 
+- `PXFDecoder.decodeRows(_:of:)` binds each row of a `@dataset` as the message
+  body it stands for, list and block cells and dotted columns included
+  ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
+  [#23](https://github.com/trendvidia/protowire-swift/issues/23)).
 - **`swift test` compares this port with protowire-go over the whole spec
   corpus** ([#45](https://github.com/trendvidia/protowire-swift/issues/45)):
-  parse verdicts, schema-bound decode verdicts and formatted text, for 250
+  parse verdicts, schema-bound decode verdicts, protobuf bytes and formatted text, for 250
   documents. `conformance/README.md` explains the record, the ledger of known
   disagreements, and how to refresh them.
 - **`PXF.Parser` reads every form in the spec's syntax corpus.** The parse leg

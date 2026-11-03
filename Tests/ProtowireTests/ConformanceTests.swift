@@ -129,15 +129,46 @@ final class ConformanceTests: XCTestCase {
             let annotations = try Self.schema(r.suite)
             do {
                 let doc = try PXF.Parser(input: data).parseDocument()
+                let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
+                decoder.typeResolver = Resolver(annotations: annotations)
                 if doc.datasets.isEmpty {
-                    let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
-                    decoder.typeResolver = Resolver(annotations: annotations)
                     _ = try decoder.decode(Anything.self, from: data)
+                } else {
+                    for dataset in doc.datasets { _ = try decoder.decodeRows(Anything.self, of: dataset) }
                 }
                 return r.decode == "accept" ? nil : "accepted; reference: \(r.decode_error ?? "")"
             } catch {
                 return r.decode == "reject" ? nil : "rejected: \(error)"
             }
+        }
+    }
+
+    /// The schema-bound decode's bytes, against the reference's deterministic
+    /// marshal of the message it decoded.
+    func testBoundBytes() throws {
+        try run(leg: "pb", expectedAtLeast: 150) { r in
+            guard r.input == "pxf", r.decode == "accept", let message = r.message, let want = r.pb else { return nil }
+            let data = try input(r)
+            let annotations = try Self.schema(r.suite)
+            let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
+            decoder.typeResolver = Resolver(annotations: annotations)
+            var bound: [PXF.BoundMessage] = []
+            do {
+                let doc = try PXF.Parser(input: data).parseDocument()
+                if doc.datasets.isEmpty {
+                    _ = try decoder.decode(Anything.self, from: data)
+                    bound = decoder.lastBound.map { [$0] } ?? []
+                } else {
+                    for dataset in doc.datasets {
+                        _ = try decoder.decodeRows(Anything.self, of: dataset)
+                        bound += decoder.lastBoundRows
+                    }
+                }
+            } catch {
+                return "did not decode: \(error)"
+            }
+            let got = bound.map { $0.serialized().map { String(format: "%02x", $0) }.joined() }
+            return got == want ? nil : "bytes differ: got \(got), want \(want)"
         }
     }
 
