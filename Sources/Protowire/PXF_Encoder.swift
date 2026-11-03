@@ -229,6 +229,12 @@ private final class _PXFEncoder: Swift.Encoder {
 
         mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
             if key.stringValue == "_null" { return } // Skip explicit _null field
+            if let literal = value as? _PXFLiteral {
+                let text = try literal.pxfLiteral
+                writeIndent()
+                encoder.output += "\(key.stringValue) = \(text)\n"
+                return
+            }
             
             if let s = value as? String { try encode(s, forKey: key); return }
             if let b = value as? Bool { try encode(b, forKey: key); return }
@@ -441,6 +447,12 @@ private final class _PXFEncoder: Swift.Encoder {
         mutating func encode(_ value: Double) throws { addComma(); encoder.output += "\(value)" }
 
         mutating func encode<T: Encodable>(_ value: T) throws {
+            if let literal = value as? _PXFLiteral {
+                let text = try literal.pxfLiteral
+                addComma()
+                encoder.output += text
+                return
+            }
             if let data = value as? Data {
                 addComma()
                 encoder.output += "b\"\(data.base64EncodedString())\""
