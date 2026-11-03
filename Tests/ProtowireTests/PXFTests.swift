@@ -322,6 +322,7 @@ final class PXFTests: XCTestCase {
     // then the Any's `value` field).
 
     private struct AnyHolder: Codable { var content: Google_Protobuf_Any }
+    private struct AnyList: Codable { var contents: [Google_Protobuf_Any] }
     private struct Simple: Codable { var name: String? }
     /// `Simple` with field numbers, which `PBEncoder` can write without a schema.
     private struct NumberedSimple: Codable {
@@ -344,8 +345,8 @@ final class PXFTests: XCTestCase {
     private static let packedSimple = Data([0x0a, 0x09] + Array("Protowire".utf8))
 
     /// example.v1 with `Message { Any content = 1 }`, `Many { repeated Any
-    /// contents = 1 }` and `Simple { string name = 1 }`, with or without
-    /// any.proto in the set.
+    /// contents = 1 }`, `ByKey { map<string, Any> by_key = 1 }` and `Simple
+    /// { string name = 1 }`, with or without any.proto in the set.
     private static func anySchema(includeAnyProto: Bool) -> PXF.Annotations {
         func field(_ name: String, _ number: Int32, _ type: Google_Protobuf_FieldDescriptorProto.TypeEnum,
                    typeName: String? = nil, repeated: Bool = false) -> Google_Protobuf_FieldDescriptorProto {
@@ -367,9 +368,14 @@ final class PXFTests: XCTestCase {
         file.name = "example.proto"
         file.package = "example.v1"
         file.dependency = ["google/protobuf/any.proto"]
+        var entry = message("ByKeyEntry", [field("key", 1, .string), field("value", 2, .message, typeName: ".google.protobuf.Any")])
+        entry.options.mapEntry = true
+        var byKey = message("ByKey", [field("by_key", 1, .message, typeName: ".example.v1.ByKey.ByKeyEntry", repeated: true)])
+        byKey.nestedType = [entry]
         file.messageType = [
             message("Message", [field("content", 1, .message, typeName: ".google.protobuf.Any")]),
             message("Many", [field("contents", 1, .message, typeName: ".google.protobuf.Any", repeated: true)]),
+            byKey,
             message("Simple", [field("name", 1, .string)]),
         ]
         guard includeAnyProto else { return PXF.Annotations(files: [file]) }
@@ -411,6 +417,36 @@ final class PXFTests: XCTestCase {
         decoder.typeResolver = AnyResolver(type: NumberedSimple.self)
         let msg = try decoder.decode(AnyHolder.self, from: Self.anyDoc)
         XCTAssertEqual(msg.content.value, Self.packedSimple)
+    }
+
+    /// Each element of a repeated Any packs its own body; an empty body packs
+    /// to no bytes.
+    func testRepeatedAnyPacksEachBody() throws {
+        let doc = #"contents = [{ @type = "example.v1.Simple" name = "a" }, { @type = "example.v1.Simple" }]"#
+        let schema = PXFDecoder(annotations: Self.anySchema(includeAnyProto: true), rootMessage: "example.v1.Many")
+        schema.typeResolver = AnyResolver(type: Simple.self)
+        let plain = PXFDecoder()
+        plain.typeResolver = AnyResolver(type: NumberedSimple.self)
+        for decoder in [schema, plain] {
+            let list = try decoder.decode(AnyList.self, from: doc)
+            XCTAssertEqual(list.contents.map(\.typeURL), ["example.v1.Simple", "example.v1.Simple"])
+            XCTAssertEqual(list.contents.map(\.value.hex), ["0a0161", ""])
+        }
+    }
+
+    /// A map value packs its body too.
+    func testMapValuedAnyPacksItsBody() throws {
+        struct ByKey: Codable { var by_key: [String: Google_Protobuf_Any] }
+        let doc = #"by_key = { "k": { @type = "example.v1.Simple" name = "a" } }"#
+        let schema = PXFDecoder(annotations: Self.anySchema(includeAnyProto: true), rootMessage: "example.v1.ByKey")
+        schema.typeResolver = AnyResolver(type: Simple.self)
+        let plain = PXFDecoder()
+        plain.typeResolver = AnyResolver(type: NumberedSimple.self)
+        for decoder in [schema, plain] {
+            let any = try XCTUnwrap(decoder.decode(ByKey.self, from: doc).by_key["k"])
+            XCTAssertEqual(any.typeURL, "example.v1.Simple")
+            XCTAssertEqual(any.value.hex, "0a0161")
+        }
     }
 
     /// The body is bound even when the set leaves out any.proto, so its

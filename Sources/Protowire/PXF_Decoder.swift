@@ -411,7 +411,7 @@ private final class _PXFDecoder: Swift.Decoder {
             let body = (e as? PXF.Block).map { PXF.BlockVal(pos: $0.pos, typeURL: $0.typeURL, entries: $0.entries, anyValue: $0.anyValue) }
                 ?? (e as? PXF.Assignment)?.value as? PXF.BlockVal
             if let body, let any = try packAny(T.self, body: body, codingPath: codingPath + [k], result: decoder.result, typeResolver: decoder.typeResolver) {
-                return any
+                return any as! T
             }
 
             if let b = e as? PXF.Block {
@@ -478,6 +478,11 @@ private final class _PXFDecoder: Swift.Decoder {
                         throw DecodingError.dataCorrupted(.init(codingPath: path,
                             debugDescription: "map field \"\(k.stringValue)\": key \(m.key) is already set"))
                     }
+                    if let b = m.value as? PXF.BlockVal,
+                       let any = try packAny(map.valueType, body: b, codingPath: path, result: decoder.result, typeResolver: decoder.typeResolver) {
+                        out.append((key, any))
+                        continue
+                    }
                     out.append((key, try map.valueType.init(from: decoder.valueDecoder(m.value, path: path))))
                 }
             }
@@ -509,18 +514,18 @@ private final class _PXFDecoder: Swift.Decoder {
     }
 }
 
-/// A `google.protobuf.Any` for `body` when `T` is one and the body opens with
-/// a type entry the resolver knows; nil otherwise, and the caller decodes `T`
-/// as usual. The resolved Swift type runs over the body either way, which is
-/// what records presence inside it.
+/// A `google.protobuf.Any` for `body` when `type` is one and the body opens
+/// with a type entry the resolver knows; nil otherwise, and the caller decodes
+/// `type` as usual. The resolved Swift type runs over the body either way,
+/// which is what records presence inside it.
 ///
 /// The packed bytes come from the descriptor when the schema-bound pass ran
 /// (`BlockVal.anyValue`), so they are the reference's. Without a schema they
 /// come from `PBEncoder`, which needs a field number on every key: a type with
 /// string CodingKeys has none, and that is an error here, not a guess.
-private func packAny<T: Decodable>(_ t: T.Type, body: PXF.BlockVal, codingPath: [CodingKey],
-                                   result: UnsafeMutablePointer<PXF.Result>?, typeResolver: PXF.TypeResolver?) throws -> T? {
-    guard String(describing: T.self) == "Google_Protobuf_Any", let typeURL = body.typeURL,
+private func packAny(_ type: Any.Type, body: PXF.BlockVal, codingPath: [CodingKey],
+                     result: UnsafeMutablePointer<PXF.Result>?, typeResolver: PXF.TypeResolver?) throws -> Google_Protobuf_Any? {
+    guard type == Google_Protobuf_Any.self, let typeURL = body.typeURL,
           let resolved = typeResolver?.resolve(typeURL: typeURL) else { return nil }
     let decoded = try resolved.init(from: _PXFDecoder(entries: body.entries, codingPath: codingPath, result: result, typeResolver: typeResolver))
     let value: Data
@@ -544,7 +549,7 @@ private func packAny<T: Decodable>(_ t: T.Type, body: PXF.BlockVal, codingPath: 
     var any = Google_Protobuf_Any()
     any.typeURL = typeURL
     any.value = value
-    return (any as! T)
+    return any
 }
 
 extension PXF {
@@ -628,6 +633,9 @@ private final class _PXFUnkeyedDecoder: Swift.Decoder {
             decoder.result?.pointee.markPresent(path: presencePath(at))
             currentIndex += 1
             if let b = v as? PXF.BlockVal {
+                if let any = try packAny(T.self, body: b, codingPath: at, result: decoder.result, typeResolver: decoder.typeResolver) {
+                    return any as! T
+                }
                 return try T(from: _PXFDecoder(entries: b.entries, codingPath: at, result: decoder.result, typeResolver: decoder.typeResolver))
             }
             if let l = v as? PXF.ListVal {
