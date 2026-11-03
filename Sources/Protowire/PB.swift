@@ -45,6 +45,14 @@ extension Optional: _PBOptional where Wrapped: Encodable {
 /// a proto3 `optional` field. A non-optional message is always written, and a
 /// nil one is absent. List elements and map entries keep their zeros.
 public final class PBEncoder {
+    /// The limits for each encode call; only `maxNestingDepth` applies. A
+    /// value nested deeper than a decoder at that limit reads is an error,
+    /// counted as the decoder counts it: the root is depth 0, and every
+    /// submessage and every map entry is one descent, so a map entry with a
+    /// message value is two (HARDENING.md § Recursion). Raise it only
+    /// together with every reader's limit.
+    public var limits = Hardening.Limits()
+
     /// Initializes a new `PBEncoder`.
     public init() {}
     
@@ -52,11 +60,36 @@ public final class PBEncoder {
     /// - Parameter v: The value to encode.
     /// - Returns: The encoded data.
     /// - Throws: An error if encoding fails.
-    public func encode<T: Encodable>(_ v: T) throws -> Data { let e = _PBEncoder(); try v.encode(to: e); return e.data }
+    public func encode<T: Encodable>(_ v: T) throws -> Data {
+        let e = _PBEncoder(depth: 0, maxDepth: limits.maxNestingDepth); try v.encode(to: e); return e.data
+    }
 }
 
 private final class _PBEncoder: Encoder {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]; var data = Data()
+    /// The decoder's depth inside the bytes this encoder writes.
+    let depth: Int
+    let maxDepth: Int
+
+    init(depth: Int, maxDepth: Int) {
+        self.depth = depth
+        self.maxDepth = maxDepth
+    }
+
+    /// An encoder for the same level: an enum's number or a packed list.
+    func peer() -> _PBEncoder { _PBEncoder(depth: depth, maxDepth: maxDepth) }
+
+    /// An encoder for a submessage or map entry, one descent down. It is
+    /// refused before anything is written into it, so an empty message past
+    /// the limit counts and a reference cycle stops here.
+    func descend(_ value: Any, _ key: CodingKey) throws -> _PBEncoder {
+        let next = depth + 1
+        if next > maxDepth {
+            throw EncodingError.invalidValue(value, .init(codingPath: [key],
+                debugDescription: "pb: nesting depth \(next) exceeds MaxNestingDepth=\(maxDepth)"))
+        }
+        return _PBEncoder(depth: next, maxDepth: maxDepth)
+    }
     func container<K>(keyedBy t: K.Type) -> KeyedEncodingContainer<K> { return KeyedEncodingContainer(KeyedContainer<K>(encoder: self)) }
     func unkeyedContainer() -> UnkeyedEncodingContainer { fatalError() }
     func singleValueContainer() -> SingleValueEncodingContainer { return self }
@@ -135,7 +168,7 @@ private final class _PBEncoder: Encoder {
         private mutating func writeComposite(_ v: Encodable, _ k: Key, set: Bool) throws {
             let m = Mirror(reflecting: v)
             if m.displayStyle == .enum {
-                let sub = _PBEncoder(); try v.encode(to: sub)
+                let sub = encoder.peer(); try v.encode(to: sub)
                 if set || sub.data != Data([0]) { try tag(k, .varint); encoder.data.append(sub.data) }
                 return
             }
@@ -143,7 +176,7 @@ private final class _PBEncoder: Encoder {
                 // An empty list has no wire form, set or not.
                 if m.children.isEmpty { return }
                 if let at = type(of: v) as? _PBArray.Type, isPackable(at.elementType) {
-                    let sub = _PBEncoder()
+                    let sub = encoder.peer()
                     for c in m.children { if let e = c.value as? Encodable { try e.encode(to: sub) } }
                     try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data); return
                 }
@@ -156,7 +189,7 @@ private final class _PBEncoder: Encoder {
                     var key: Encodable?, val: Encodable?
                     for sc in p { if sc.label == "key" { key = sc.value as? Encodable } else if sc.label == "value" { val = sc.value as? Encodable } }
                     if let key = key, let val = val {
-                        let sub = _PBEncoder(); try sub.encodeEntry(key: key, value: val)
+                        let sub = try encoder.descend(v, k); try sub.encodeEntry(key: key, value: val)
                         try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data)
                     }
                 }
@@ -165,7 +198,7 @@ private final class _PBEncoder: Encoder {
             // A message is written even when it is empty, because a
             // non-optional message field is a set one: the reference writes
             // the same record for a struct value, and only a nil is absent.
-            let sub = _PBEncoder(); try v.encode(to: sub); try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data)
+            let sub = try encoder.descend(v, k); try v.encode(to: sub); try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data)
         }
 
         private mutating func tag(_ k: Key, _ t: Protowire.WireType) throws {

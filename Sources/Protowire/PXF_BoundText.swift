@@ -389,10 +389,11 @@ extension PXF {
             let name = Binder.messageName(ofTypeURL: url)
             guard let message = annotations.message(name),
                   let inner = try? BoundMessage(reading: packed, message: name, annotations: annotations),
-                  case .message(let fields, _)? = try? PXFEncoder.node(BoundText(message: inner, annotations: annotations, depth: depth))
+                  case .message(let fields, _)? = try? PXFEncoder.node(BoundText(message: inner, annotations: annotations, depth: depth),
+                                                                  level: depth, maxDepth: limits.maxNestingDepth)
             else { return nil }
             var renderer = PXFRenderer(indent: "  ", emitDefaults: false, annotations: annotations)
-            let text = renderer.document(.message(fields, typeURL: nil), message: message)
+            guard let text = try? renderer.document(.message(fields, typeURL: nil), message: message) else { return nil }
             do {
                 let parser = Parser(input: Data(text.utf8))
                 parser.limits = limits
