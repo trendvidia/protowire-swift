@@ -11,6 +11,16 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`pxf.BigFloat`, `pxf.BigInt` and `pxf.Decimal` read and write as literals**
+  ([#26](https://github.com/trendvidia/protowire-swift/issues/26)). A BigFloat
+  literal is read exactly, at the precision its `p<bits>` suffix states or 256
+  bits without one, and written with enough digits to read back. All three are
+  now `Encodable`: `PXFEncoder` writes the literal and `PBEncoder` the message
+  fields. A precision suffix on any other field is an error naming the field.
+  `Hardening.maxBigFloatExponent` is new.
+
 ### Changed
 
 - **A decoder with a schema now enforces the draft's binding rules across the

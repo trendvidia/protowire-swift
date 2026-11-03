@@ -9,7 +9,7 @@
 //
 // Contract:
 //
-//   check-decode --format <pxf|pb|sbe|envelope>
+//   check-decode --format <pxf|pb|pb-render|sbe|envelope>
 //                --schema <fully.qualified.MessageType>
 //                --proto  <path-to-adversarial.proto>
 //                --input  <path>
@@ -86,7 +86,7 @@ struct BigIntHolder: Codable {
 
 // The arbitrary-precision carriers, so the digit cap is proved on a field
 // only the cap can reject (protowire#279). Case names are the proto's.
-struct BigNumHolder: Decodable {
+struct BigNumHolder: Codable {
     var big_int: Pxf_BigInt?
     var decimal: Pxf_Decimal?
     var big_float: Pxf_BigFloat?
@@ -186,6 +186,11 @@ do {
         try pxfDecode(inputData, schema: schema)
     case "pb":
         try pbDecode(inputData, schema: schema)
+    case "pb-render":
+        // The producer's side of the bounds: the decoder stores a big number's
+        // fields and checks nothing, so writing them is what is tested.
+        guard schema == "adversarial.v1.BigNumHolder" else { throw RuntimeError("unknown schema for pb-render: \(schema)") }
+        _ = try PXFEncoder().encode(PBDecoder().decode(BigNumHolder.self, from: inputData))
     case "envelope":
         throw RuntimeError("envelope decode not yet implemented in this reference")
     case "sbe":
