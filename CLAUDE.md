@@ -124,6 +124,12 @@ record with `conformance/update.sh`.
    through the same containers a user's type uses, so the `text` leg of
    `ConformanceTests` exercises the real encoder.
 
+10. **A literal carries its call's digit cap.** `Hardening.Limits` reaches the
+   parser and the PB and SBE decoders directly. The Codable containers don't
+   hold it, so `PXF.Parser` writes `MaxNumericLiteralDigits` onto each `IntVal`
+   for a big-number type to read. A list's or map's count is checked by the
+   parser as it reads, and across bindings by `PXF.checkRepeatedCounts`.
+
 ## Open gaps (not yet implemented)
 
 - **The remaining bind-time checks.** `validateSchema` covers `(pxf.key)`,

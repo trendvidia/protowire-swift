@@ -91,6 +91,9 @@ public final class SBEMarshaller {
 
 /// An unmarshaller that decodes SBE binary data into dictionary-based values.
 public final class SBEUnmarshaller {
+    /// The limits for each decode call; the `Hardening` constants by default.
+    public var limits = Hardening.Limits()
+
     /// Initializes a new `SBEUnmarshaller`.
     public init() {}
     
@@ -101,23 +104,25 @@ public final class SBEUnmarshaller {
     /// - Returns: A dictionary containing the decoded values, indexed by field name.
     /// - Throws: An error if decoding fails.
     public func unmarshal(_ data: Data, template: SBE.MessageTemplate) throws -> [String: Any] {
+        try limits.checkMessageSize(data.count)
         guard data.count >= SBE.headerSize else { throw PB.Error.corruptData }
         let header = SBE.readHeader(data)!
         if header.templateID != template.templateID { throw PB.Error.corruptData }
+        // A wire block may be longer than the template's (newer schemas append
+        // fields), never shorter.
+        guard Int(header.blockLength) >= template.blockLength,
+              data.count >= SBE.headerSize + Int(header.blockLength) else { throw PB.Error.corruptData }
         var res: [String: Any] = [:]
         let rbStart = data.startIndex + SBE.headerSize
-        let rbEnd = rbStart + template.blockLength
+        let rbEnd = rbStart + Int(header.blockLength)
         let rb = data.subdata(in: rbStart..<rbEnd)
         for ft in template.fields { res[ft.name] = readField(rb, ft) }
         var pos = rbEnd
         for gt in template.groups {
-            guard pos + SBE.groupHeaderSize <= data.endIndex else { break }
-            let bl = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos - data.startIndex, as: UInt16.self).littleEndian })
-            let count = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos + 2 - data.startIndex, as: UInt16.self).littleEndian })
+            let (bl, count) = try SBE.readGroupHeader(data, at: pos, entryBlockLength: gt.blockLength, limits: limits)
             pos += SBE.groupHeaderSize
             var list: [[String: Any]] = []
             for _ in 0..<count {
-                guard pos + bl <= data.endIndex else { break }
                 let ed = data.subdata(in: pos..<pos+bl); var entry: [String: Any] = [:]
                 for ft in gt.fields { entry[ft.name] = readField(ed, ft) }
                 list.append(entry); pos += bl

@@ -91,6 +91,20 @@ lockstep across language ports when the wire format changes.
   body it stands for, list and block cells and dotted columns included
   ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
   [#23](https://github.com/trendvidia/protowire-swift/issues/23)).
+- **Every HARDENING limit is enforced and can be set per call**
+  ([#16](https://github.com/trendvidia/protowire-swift/issues/16)).
+  `PXFDecoder`, `PBDecoder`, `SBEUnmarshaller` and `PXF.Parser` gain a `limits`
+  property of the new `Hardening.Limits`, and `SBE.View` an init parameter. The
+  defaults are the draft's constants. `MaxMessageSize` is 64 MiB, checked before
+  the input is read, and `MaxBytesLiteralLength` and `MaxRepeatedCount` equal it.
+  A 65 MiB input used to decode. `MaxNestingDepth` and `MaxNumericLiteralDigits`
+  can now be lowered. `MaxBigFloatExponent` (16384) is new on the PB read path,
+  so a `pxf.BigFloat` past it that used to decode is now refused. `DecoderError`
+  gains four cases, so an exhaustive `switch` over it needs more arms, and
+  `nestingDepthExceeded` and `numericLiteralTooLong` gain a `limit:`, so a pattern
+  that binds their payload changes too.
+  `check-decode` takes `--limit NAME=VALUE`, and reads `ListHolder` and the
+  corpus's SBE rows.
 - **`swift test` compares this port with protowire-go over the whole spec
   corpus** ([#45](https://github.com/trendvidia/protowire-swift/issues/45)):
   parse verdicts, schema-bound decode verdicts, protobuf bytes and formatted text, for 250
@@ -180,6 +194,13 @@ lockstep across language ports when the wire format changes.
   `UInt8`, `Int16` and `Int8` no longer overflow the stack.
 
 ### Fixed
+
+- **SBE decoding refuses what the bytes can't hold**
+  ([#16](https://github.com/trendvidia/protowire-swift/issues/16)). A wire block
+  shorter than the template's, or longer than the input, trapped
+  `SBEUnmarshaller`. A truncated group ended the list early with no error, and
+  `SBE.View` trapped later, reading it. Both now throw, as protowire-go does, and
+  `SBE.View` checks every group header when it is created.
 
 - **`PXF.Result` reports a keyed entry's key field, and every other nested
   field, at its real path** ([trendvidia/protowire-go#214](https://github.com/trendvidia/protowire-go/issues/214)).

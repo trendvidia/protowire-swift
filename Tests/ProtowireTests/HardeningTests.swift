@@ -101,7 +101,7 @@ final class HardeningTests: XCTestCase {
     func testPXFBigIntOneDigitPastCapIsRejectedNamingTheLimit() {
         let literal = digits(Hardening.maxNumericLiteralDigits + 1)
         XCTAssertThrowsError(try bigInt(literal)) { err in
-            guard case DecoderError.numericLiteralTooLong(let n) = err else {
+            guard case DecoderError.numericLiteralTooLong(let n, _) = err else {
                 return XCTFail("expected numericLiteralTooLong, got \(err)")
             }
             XCTAssertEqual(n, 4097)
