@@ -119,4 +119,52 @@ final class SBEUTF8Tests: XCTestCase {
         let rows = try XCTUnwrap(got["rows"] as? [[String: Any]])
         XCTAssertEqual(rows.map { $0["tag"] as? String }, ["😀", "\u{0}z"])
     }
+
+    /// trendvidia/protowire-swift#61: an overlong string is cut at the last
+    /// whole character at or before the limit and NUL-padded, so it still
+    /// decodes; a bytes field is cut at the limit.
+    func testOverlongStringCutOnCharacterBoundary() throws {
+        let all = try templates()
+        let cut = try XCTUnwrap(all["utf8.v1.Cut"])
+        func marshal(_ text: String) throws -> Data {
+            try SBEMarshaller().marshal([
+                "text": text, "raw": Data(text.utf8), "code": ["text": text],
+                "rows": [["tag": text]] as [[String: Any]],
+            ], template: cut)
+        }
+        // Header 8; block: text 0-8, raw 8-16, code.text 16-24; group header 4;
+        // the one row's tag 28-36.
+        let block = SBE.headerSize
+        let sites = [("root field", block), ("composite field", block + 16), ("group field", block + 28)]
+        let cases: [(String, String, String)] = [
+            ("2-byte character across the limit", "ABCDEFGé", "ABCDEFG"),
+            ("3-byte character across the limit", "ABCDEF€", "ABCDEF"),
+            ("3-byte character, one byte over", "ABCDE€x", "ABCDE€"),
+            ("4-byte character across the limit", "ABCDE😀", "ABCDE"),
+            ("limit between two 4-byte characters", "😀😀😀", "😀😀"),
+            ("cut already on a boundary", "ABCDEFGHI", "ABCDEFGH"),
+            ("fits exactly", "ABCDEFé", "ABCDEFé"),
+        ]
+        for (name, input, text) in cases {
+            let frame = try marshal(input)
+            let want = Array(text.utf8) + [UInt8](repeating: 0, count: 8 - text.utf8.count)
+            for (site, at) in sites {
+                XCTAssertEqual(Array(frame[at..<at + 8]), want, "\(name): \(site)")
+            }
+            XCTAssertEqual(Array(frame[block + 8..<block + 16]), Array(Array(input.utf8)[..<8]), "\(name): bytes field")
+            let got = try SBEUnmarshaller().unmarshal(frame, template: cut)
+            XCTAssertEqual(got["text"] as? String, text, name)
+        }
+
+        // The case the issue names, byte for byte.
+        let frame = try marshal("ABCDEFGé")
+        XCTAssertEqual(Array(frame[block..<block + 8]), [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x00])
+        XCTAssertEqual(Array(frame[block + 8..<block + 16]), [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0xC3])
+
+        // A limit shorter than the first character leaves the field empty.
+        let tiny = try XCTUnwrap(all["utf8.v1.CutTiny"])
+        let tinyFrame = try SBEMarshaller().marshal(["text": "😀"], template: tiny)
+        XCTAssertEqual(Array(tinyFrame[block..<block + 3]), [0, 0, 0])
+        XCTAssertEqual(try SBEUnmarshaller().unmarshal(tinyFrame, template: tiny)["text"] as? String, "")
+    }
 }

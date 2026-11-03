@@ -82,6 +82,17 @@ public enum SBE {
 
     // MARK: - Text fields
 
+    /// Shortens `s` to at most `n` bytes without splitting a UTF-8 character
+    /// (draft -01 § SBE Annotations). A byte-exact cut can leave half a
+    /// character, and a strict decoder then rejects the whole message. The
+    /// caller NUL-pads what the cut leaves over.
+    static func cutString(_ s: [UInt8], _ n: Int) -> ArraySlice<UInt8> {
+        guard s.count > n else { return s[...] }
+        var n = n
+        while n > 0 && s[n] & 0xC0 == 0x80 { n -= 1 }
+        return s[..<n]
+    }
+
     /// A string field's bytes without the NUL padding after them. An interior
     /// NUL is text and stays.
     static func trimmingTrailingNULs(_ raw: Data) -> Data {

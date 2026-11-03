@@ -77,7 +77,7 @@ public final class SBEMarshaller {
         case .float:  writeLE((value as? Float ?? Float(value as? Double ?? 0)).bitPattern, to: &block, at: off)
         case .double: writeLE((value as? Double ?? Double(value as? Float ?? 0)).bitPattern, to: &block, at: off)
         case .char:
-            let bytes = ft.isBytes ? Self.rawBytes(value).prefix(ft.size) : Array(((value as? String) ?? "").utf8).prefix(ft.size)
+            let bytes = ft.isBytes ? Self.rawBytes(value).prefix(ft.size) : SBE.cutString(Array(((value as? String) ?? "").utf8), ft.size)
             for (i, b) in bytes.enumerated() { block[off + i] = b }
             for i in bytes.count..<ft.size { block[off + i] = 0 }
         }
