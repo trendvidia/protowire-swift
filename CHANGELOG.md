@@ -152,6 +152,10 @@ lockstep across language ports when the wire format changes.
   and triple-quoted strings are no longer garbled.
 - `PXF.ParserError` loses `datasetDottedColumn` and `datasetCellRejected` and
   gains `datasetColumn` and `lexical`, so an exhaustive `switch` needs updating.
+- **`dump-envelope --vector zero-map-entry`** prints the wire vector of
+  [trendvidia/protowire#295](https://github.com/trendvidia/protowire/issues/295),
+  and an unknown vector exits 3 with `not-implemented: <name>`
+  ([#15](https://github.com/trendvidia/protowire-swift/issues/15)).
 
 ### Fixed
 

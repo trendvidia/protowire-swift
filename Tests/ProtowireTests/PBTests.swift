@@ -83,4 +83,21 @@ final class PBTests: XCTestCase {
         XCTAssertEqual(header.blockLength, 8)
         XCTAssertEqual(header.templateID, 1)
     }
+
+    private struct MapHolder: Encodable {
+        struct Inner: Encodable {
+            var metadata: [String: String]
+            enum CodingKeys: Int, CodingKey { case metadata = 5 }
+        }
+        var error: Inner
+        enum CodingKeys: Int, CodingKey { case error = 4 }
+    }
+
+    /// The golden is protowire's `testdata/envelope/zero-map-entry.expected.hex`,
+    /// which protoc and protobuf-go both produce. A map entry carries its key
+    /// and value at zero (protowire#295).
+    func testZeroMapEntryMatchesGolden() throws {
+        let data = try PBEncoder().encode(MapHolder(error: .init(metadata: ["": ""])))
+        XCTAssertEqual(data.map { String(format: "%02x", $0) }.joined(), "22062a040a001200")
+    }
 }
