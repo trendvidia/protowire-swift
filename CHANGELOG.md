@@ -40,6 +40,21 @@ lockstep across language ports when the wire format changes.
   - A comment on the same line, after a value, is that entry's `trailingComment`.
   - `b"..."` accepts URL-safe and unpadded base64.
 
+### Fixed
+
+- **`PXF.Format.formatDocument` writes what `pxf fmt` writes**: the comparison's
+  format leg goes from 16 disagreements to 0. A type entry and a trailing
+  comment are kept, and strings are quoted as the reference quotes them.
+- **A map key's spelling follows draft -01 § Entries and Keys**
+  ([#18](https://github.com/trendvidia/protowire-swift/issues/18),
+  [#19](https://github.com/trendvidia/protowire-swift/issues/19)). The formatter
+  used to turn `"true":` into `true:`, which no longer binds on a string key. It
+  now keeps a key's quotes unless the key is identifier-safe, dots included, and
+  a bare key stays bare.
+- **`PXFEncoder` writes a dictionary as a map**, `by_label = { a.b: 1 }`, with
+  string keys spelled by that same rule. It used to write `a.b = 1`, and a key
+  like `my key` came out unquoted. Key order is still the dictionary's.
+
 ### Changed
 
 - **`PXF.Parser` rejects what the grammar does.** A raw line feed in a simple

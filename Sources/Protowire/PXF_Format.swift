@@ -40,11 +40,7 @@ extension PXF {
                 } else if let m = entry as? MapEntry {
                     writeComments(m.leadingComments, level: level, into: &out)
                     writeIndent(level, into: &out)
-                    if needsQuoting(m.key) {
-                        out += PXFEncoder.quote(m.key)
-                    } else {
-                        out += m.key
-                    }
+                    out += mapKeyQuoted(m) ? quote(m.key) : m.key
                     out += ": "
                     formatValue(m.value, level: level, into: &out)
                     if let trailing = m.trailingComment, !trailing.isEmpty {
@@ -55,6 +51,7 @@ extension PXF {
                     writeComments(b.leadingComments, level: level, into: &out)
                     writeIndent(level, into: &out)
                     out += "\(entryName(b.name, quoted: b.nameQuoted)) {\n"
+                    formatTypeEntry(b.typeURL, b.typeEntryLeadingComments, b.typeEntryTrailingComment, level: level + 1, into: &out)
                     formatEntries(b.entries, level: level + 1, into: &out)
                     writeIndent(level, into: &out)
                     out += "}\n"
@@ -66,13 +63,23 @@ extension PXF {
         /// schema, so a quoted name stays quoted. `canonicalizeKeyed` is what
         /// unquotes one.
         private static func entryName(_ name: String, quoted: Bool) -> String {
-            quoted ? PXFEncoder.quote(name) : name
+            quoted ? quote(name) : name
+        }
+
+        private static func formatTypeEntry(_ url: String?, _ leading: [Comment], _ trailing: String?,
+                                            level: Int, into out: inout String) {
+            guard let url else { return }
+            writeComments(leading, level: level, into: &out)
+            writeIndent(level, into: &out)
+            out += "@type = \(quote(url))"
+            if let trailing, !trailing.isEmpty { out += " \(trailing)" }
+            out += "\n"
         }
 
         private static func formatValue(_ value: Value, level: Int, into out: inout String) {
             switch value {
             case let v as StringVal:
-                out += PXFEncoder.quote(v.value)
+                out += quote(v.value)
             case let v as IntVal:
                 out += v.raw
             case let v as FloatVal:
@@ -101,6 +108,7 @@ extension PXF {
                 out += "]"
             case let v as BlockVal:
                 out += "{\n"
+                formatTypeEntry(v.typeURL, v.typeEntryLeadingComments, v.typeEntryTrailingComment, level: level + 1, into: &out)
                 formatEntries(v.entries, level: level + 1, into: &out)
                 writeIndent(level, into: &out)
                 out += "}"
@@ -122,18 +130,77 @@ extension PXF {
             }
         }
 
-        /// Map keys must be quoted unless they look like a plain identifier
-        /// (letter or `_`, then letters / digits / `_`). Empty strings are
-        /// always quoted.
-        private static func needsQuoting(_ s: String) -> Bool {
-            if s.isEmpty { return true }
-            for (i, ch) in s.unicodeScalars.enumerated() {
-                let v = ch.value
-                let okAlpha = (v >= 0x61 && v <= 0x7A) || (v >= 0x41 && v <= 0x5A) || v == 0x5F
-                let okDigit = i > 0 && v >= 0x30 && v <= 0x39
-                if !(okAlpha || okDigit) { return true }
+        /// How a map key is spelled on the way out. A key the document quoted
+        /// stays quoted unless it is identifier-safe. A bare key stays bare,
+        /// because `true`, `0` and `123` denote a bool or integer key and
+        /// quotes would change what they denote (draft -01 § Entries and
+        /// Keys). An entry built in code has no spelling of its own, so it is
+        /// bare when its key lexes as one bare map-key token.
+        private static func mapKeyQuoted(_ m: MapEntry) -> Bool {
+            m.keyKind == .string ? !identSafeEntryName(m.key) : !lexesAsBareMapKey(m.key)
+        }
+
+        private static func lexesAsBareMapKey(_ s: String) -> Bool {
+            let lexer = Lexer(string: s)
+            let token = lexer.next()
+            switch token.kind {
+            case .identifier, .bool:
+                return token.value == s && lexer.next().kind == .eof
+            case .number:
+                return token.value == s && !s.contains("p") && lexer.next().kind == .eof
+            default:
+                return false
             }
-            return false
+        }
+
+        /// A string as the reference's formatter writes it: Go's `%q`. It
+        /// differs from `PXFEncoder.quote`, which is the marshaller's, on
+        /// `\a \b \f \v`, U+007F and non-printable Unicode, which it
+        /// escapes rather than writes.
+        static func quote(_ s: String) -> String {
+            var out = "\""
+            for scalar in s.unicodeScalars {
+                switch scalar {
+                case "\"": out += "\\\""
+                case "\\": out += "\\\\"
+                case "\u{07}": out += "\\a"
+                case "\u{08}": out += "\\b"
+                case "\u{0C}": out += "\\f"
+                case "\n": out += "\\n"
+                case "\r": out += "\\r"
+                case "\t": out += "\\t"
+                case "\u{0B}": out += "\\v"
+                default:
+                    if isPrintable(scalar) {
+                        out.unicodeScalars.append(scalar)
+                    } else if scalar.value < 0x80 {
+                        out += "\\x" + hex(scalar.value, width: 2)
+                    } else if scalar.value < 0x10000 {
+                        out += "\\u" + hex(scalar.value, width: 4)
+                    } else {
+                        out += "\\U" + hex(scalar.value, width: 8)
+                    }
+                }
+            }
+            return out + "\""
+        }
+
+        private static func hex(_ value: UInt32, width: Int) -> String {
+            let digits = String(value, radix: 16)
+            return String(repeating: "0", count: width - digits.count) + digits
+        }
+
+        /// Go's `strconv.IsPrint`: letters, marks, numbers, punctuation and
+        /// symbols, plus the ASCII space.
+        private static func isPrintable(_ scalar: Unicode.Scalar) -> Bool {
+            if scalar == " " { return true }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .surrogate, .privateUse, .unassigned,
+                 .spaceSeparator, .lineSeparator, .paragraphSeparator:
+                return false
+            default:
+                return true
+            }
         }
     }
 }
