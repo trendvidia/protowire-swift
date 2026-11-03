@@ -7,6 +7,11 @@ import Foundation
 /// of these gets PXF wrapper sugar (`field = innerValue` instead of
 /// `field = { value = innerValue }`). User-defined types with a similar
 /// shape are NOT covered — that would be a fragile heuristic.
+/// A dictionary whose keys are strings, so a key's spelling depends on what
+/// it holds. An integer or bool key is written as it is.
+private protocol _PXFStringKeyedMap {}
+extension Dictionary: _PXFStringKeyedMap where Key == String {}
+
 private let protobufWrapperTypeNames: Set<String> = [
     "Google_Protobuf_DoubleValue",
     "Google_Protobuf_FloatValue",
@@ -124,6 +129,10 @@ private final class _PXFEncoder: Swift.Encoder {
     /// form moves it to the entry name, and the anonymous form cannot carry
     /// it empty, since a decoder rejects an explicit empty key.
     enum KeyHandling { case capture(field: String), dropEmpty(field: String) }
+    /// What this encoder's keyed container holds when it is a map's: its
+    /// entries take the `:` form, not `=`.
+    enum MapKeys { case string, other }
+    var mapKeys: MapKeys?
     let keyHandling: KeyHandling?
     var capturedKey: String?
 
@@ -173,20 +182,31 @@ private final class _PXFEncoder: Swift.Encoder {
         var encoder: _PXFEncoder
         var codingPath: [CodingKey] = []
 
+        /// What opens the entry for `key`: `name = `, or a map's `key: `,
+        /// which shares the rule for spelling a string key with keyed entry
+        /// names (draft -01 § Entries and Keys).
+        private func lead(_ key: Key) -> String {
+            switch encoder.mapKeys {
+            case .string?: return PXF.Format.canonicalEntryName(key.stringValue) + ": "
+            case .other?: return key.stringValue + ": "
+            case nil: return key.stringValue + " = "
+            }
+        }
+
         mutating func encodeNil(forKey key: Key) throws {
             writeIndent()
-            encoder.output += "\(key.stringValue) = null\n"
+            encoder.output += "\(lead(key))null\n"
         }
 
         mutating func encode(_ value: Bool, forKey key: Key) throws {
             writeIndent()
-            encoder.output += "\(key.stringValue) = \(value)\n"
+            encoder.output += "\(lead(key))\(value)\n"
         }
 
         mutating func encode(_ value: String, forKey key: Key) throws {
             if encoder.consumesKey(value, forKey: key) { return }
             writeIndent()
-            encoder.output += "\(key.stringValue) = \(PXFEncoder.quote(value))\n"
+            encoder.output += "\(lead(key))\(PXFEncoder.quote(value))\n"
         }
 
         mutating func encode(_ value: Int, forKey key: Key) throws { try encodeNumber(value, forKey: key) }
@@ -204,7 +224,7 @@ private final class _PXFEncoder: Swift.Encoder {
 
         private mutating func encodeNumber(_ value: Any, forKey key: Key) throws {
             writeIndent()
-            encoder.output += "\(key.stringValue) = \(value)\n"
+            encoder.output += "\(lead(key))\(value)\n"
         }
 
         mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
@@ -223,14 +243,14 @@ private final class _PXFEncoder: Swift.Encoder {
 
             if let data = value as? Data {
                 writeIndent()
-                encoder.output += "\(key.stringValue) = b\"\(data.base64EncodedString())\"\n"
+                encoder.output += "\(lead(key))b\"\(data.base64EncodedString())\"\n"
                 return
             }
             if let date = value as? Date {
                 writeIndent()
                 let formatter = ISO8601DateFormatter()
                 formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                encoder.output += "\(key.stringValue) = \(formatter.string(from: date))\n"
+                encoder.output += "\(lead(key))\(formatter.string(from: date))\n"
                 return
             }
 
@@ -282,12 +302,12 @@ private final class _PXFEncoder: Swift.Encoder {
                 
                 if sub.isSingleValue {
                     writeIndent()
-                    encoder.output += "\(key.stringValue) = \(sub.output)\n"
+                    encoder.output += "\(lead(key))\(sub.output)\n"
                     return
                 }
                 
                 writeIndent()
-                encoder.output += "\(key.stringValue) = {\n"
+                encoder.output += "\(lead(key)){\n"
                 
                 // Emit nulls from FieldMask. The sub-encoder's children already
                 // write at sub.codingPath.count indents; level: 0 keeps these
@@ -305,7 +325,7 @@ private final class _PXFEncoder: Swift.Encoder {
 
             if mirror.displayStyle == .collection {
                 writeIndent()
-                encoder.output += "\(key.stringValue) = ["
+                encoder.output += "\(lead(key))["
                 let sub = _PXFEncoder(indent: encoder.indent, emitDefaults: encoder.emitDefaults, codingPath: codingPath + [key])
                 var unkeyed = sub.unkeyedContainer()
                 try unkeyed.encode(value)
@@ -315,8 +335,11 @@ private final class _PXFEncoder: Swift.Encoder {
             }
 
             writeIndent()
-            encoder.output += "\(key.stringValue) = {\n"
+            encoder.output += "\(lead(key)){\n"
             let sub = _PXFEncoder(indent: encoder.indent, emitDefaults: encoder.emitDefaults, codingPath: codingPath + [key])
+            if mirror.displayStyle == .dictionary {
+                sub.mapKeys = value is _PXFStringKeyedMap ? .string : .other
+            }
             try value.encode(to: sub)
             encoder.output += sub.output
             writeIndent()
@@ -332,7 +355,7 @@ private final class _PXFEncoder: Swift.Encoder {
             if elements.isEmpty {
                 if encoder.emitDefaults {
                     writeIndent()
-                    encoder.output += "\(key.stringValue) = []\n"
+                    encoder.output += "\(lead(key))[]\n"
                 }
                 return
             }
