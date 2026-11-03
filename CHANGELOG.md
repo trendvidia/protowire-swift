@@ -157,6 +157,28 @@ lockstep across language ports when the wire format changes.
   and an unknown vector exits 3 with `not-implemented: <name>`
   ([#15](https://github.com/trendvidia/protowire-swift/issues/15)).
 
+### Changed
+
+- **`PBEncoder` leaves out zero values, as protowire-go does**
+  ([#14](https://github.com/trendvidia/protowire-swift/issues/14)). A
+  non-optional scalar, string, bytes, list or map at zero writes nothing, so
+  the bytes change for any such field. An `Optional` holding a value is written
+  even at zero, which is how a type marks a proto3 `optional` field. A
+  non-optional message is still written when empty, matching the reference for
+  a struct value. List elements and map entries keep their zeros.
+- **`PBDecoder` reads an absent field as zero** for a non-optional property,
+  where it used to throw. Bytes from any port that omits zeros decode now.
+- `Envelope`, `AppError` and `FieldError` no longer write an empty string or
+  bytes held in an `Optional`, because `envelope.proto` has no `optional`
+  fields.
+
+### Fixed
+
+- `PBEncoder` throws on a field number too wide for an `Int32`, where it
+  trapped. `PBDecoder` throws on a varint too wide for an
+  `Int32` or narrower field, where it trapped. Lists of `UInt32`, `UInt16`,
+  `UInt8`, `Int16` and `Int8` no longer overflow the stack.
+
 ### Fixed
 
 - **`PXF.Result` reports a keyed entry's key field, and every other nested

@@ -57,23 +57,10 @@ func dumpEnvelope() throws {
     print(hex(try PBEncoder().encode(env)))
 }
 
-/// `Envelope { error { metadata { key: "" value: "" } } }`, by the `pb` codec.
-/// The two structs name only the fields the vector sets, because `Envelope`
-/// and `AppError` hold non-optional fields that `PBEncoder` writes at zero
-/// (protowire-swift#14).
-struct ZeroMapEntryVector: Encodable {
-    struct Error: Encodable {
-        var metadata: [String: String]
-        enum CodingKeys: Int, CodingKey { case metadata = 5 }
-    }
-    var error: Error
-    enum CodingKeys: Int, CodingKey { case error = 4 }
-}
-
 func dumpVector(_ name: String) throws {
     switch name {
     case "zero-map-entry":
-        print(hex(try PBEncoder().encode(ZeroMapEntryVector(error: .init(metadata: ["": ""])))))
+        print(hex(try PBEncoder().encode(Envelope(status: 0, error: AppError(code: "", metadata: ["": ""])))))
     default:
         FileHandle.standardError.write(Data("not-implemented: \(name)\n".utf8))
         exit(3)
@@ -253,14 +240,6 @@ struct Settings: Codable {
         retries = try c.decodeIfPresent(Int32.self, forKey: .retries) ?? 0
         region = try c.decodeIfPresent(String.self, forKey: .region) ?? ""
         verbose = try c.decodeIfPresent(Bool.self, forKey: .verbose) ?? false
-    }
-    func encode(to encoder: Swift.Encoder) throws {
-        // proto3 presence: a scalar at its zero value is not on the wire.
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        if !name.isEmpty { try c.encode(name, forKey: .name) }
-        if retries != 0 { try c.encode(retries, forKey: .retries) }
-        if !region.isEmpty { try c.encode(region, forKey: .region) }
-        if verbose { try c.encode(verbose, forKey: .verbose) }
     }
 }
 
