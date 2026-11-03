@@ -28,6 +28,17 @@ public struct Envelope: Codable, Equatable {
         case data = 3
         case error = 4
     }
+
+    // envelope.proto has no `optional` fields, so an empty value is the same
+    // as none. Without these, PBEncoder would treat a set `Optional` as an
+    // explicit presence the schema doesn't have.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(transportError.nonEmpty, forKey: .transportError)
+        try c.encodeIfPresent(data.nonEmpty, forKey: .data)
+        try c.encodeIfPresent(error, forKey: .error)
+    }
 }
 
 /// AppError represents an application-level error.
@@ -59,6 +70,15 @@ public struct AppError: Codable, Equatable {
         case details = 4
         case metadata = 5
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(code, forKey: .code)
+        try c.encodeIfPresent(message.nonEmpty, forKey: .message)
+        try c.encodeIfPresent(args, forKey: .args)
+        try c.encodeIfPresent(details, forKey: .details)
+        try c.encodeIfPresent(metadata, forKey: .metadata)
+    }
 }
 
 /// FieldError represents a validation error on a specific field.
@@ -86,6 +106,18 @@ public struct FieldError: Codable, Equatable {
         case message = 3
         case args = 4
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(field, forKey: .field)
+        try c.encode(code, forKey: .code)
+        try c.encodeIfPresent(message.nonEmpty, forKey: .message)
+        try c.encodeIfPresent(args, forKey: .args)
+    }
+}
+
+private extension Optional where Wrapped: Collection {
+    var nonEmpty: Wrapped? { flatMap { $0.isEmpty ? nil : $0 } }
 }
 
 // MARK: - Builders

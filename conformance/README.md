@@ -21,12 +21,15 @@ Each leg of `ConformanceTests` compares one thing per document:
 | `parse` | `PXF.Parser` | `pxf.Parse` |
 | `decode` | `PXFDecoder` bound to the document's message | `UnmarshalFullDescriptor`, or `BindRow` for each dataset row |
 | `pb` | The schema-bound pass's `BoundMessage`, one per row of a dataset | The decoded message, marshalled deterministically |
+| `text` | `PXFEncoder` over the bound message, or over the bytes of a `pb` input | `pxf.Marshal`, whose output for `testdata/text` is the spec's golden |
 | `format` | `PXF.Format.formatDocument` | `pxf.FormatDocument` |
 
 Use the reference's full decode here. The plain `UnmarshalDescriptor` leaves
 `(pxf.required)` and `(pxf.default)` to the caller. refgen refuses to write a
 record in which `annotations/missing-required.pxf` was accepted, so a run that
-skipped the annotations can't pass for a good one.
+skipped the annotations can't pass for a good one. The `annotations-carrier`
+suite runs the same documents against the `@required` / `@default` spelling,
+from the descriptor set the corpus ships compiled.
 
 ## The ledger
 

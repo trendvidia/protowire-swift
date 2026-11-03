@@ -20,9 +20,42 @@ lockstep across language ports when the wire format changes.
   now `Encodable`: `PXFEncoder` writes the literal and `PBEncoder` the message
   fields. A precision suffix on any other field is an error naming the field.
   `Hardening.maxBigFloatExponent` is new.
+### Fixed
+
+- **`PXFEncoder` writes what the reference writes**, and `ConformanceTests` now
+  compares its text with `pxf.Marshal` over the corpus. Lists were invalid text and
+  now round-trip ([#32](https://github.com/trendvidia/protowire-swift/issues/32)). A
+  nested `_null` path is written inside its own block, not as a dotted root entry
+  ([#42](https://github.com/trendvidia/protowire-swift/issues/42)). **The text
+  changes for existing types:** nested messages are `name { ... }` rather than
+  `name = { ... }`, lists are one element per line, map keys are sorted, an empty list
+  or map is left out unless `emitDefaults` is set, floats use Go's `%g` spelling,
+  and a timestamp has no trailing zeros. With a schema, an enum's name is written bare.
+- `Protowire.consumeFixed32`, `consumeFixed64` and `SBE.readHeader` read a `Data`
+  slice at any offset. They trapped on a misaligned one.
 
 ### Changed
 
+- **A schema the draft refuses now fails every decode**, before the document is
+  read ([#38](https://github.com/trendvidia/protowire-swift/issues/38),
+  [#39](https://github.com/trendvidia/protowire-swift/issues/39)), anywhere in the
+  import closure: a default on a repeated, map or group field or on a message
+  type with no literal, `(pxf.required)` on a oneof member, two defaults in one
+  oneof, and two messages with one name. `PXF.Annotations.validateSchema(message:)`
+  reports the same without a document. `PXF.AnnotationError` gains three cases, so
+  an exhaustive `switch` over it needs them. `validateRequiredDefault` and
+  `validateKeyPlacement` still report their one rule each.
+- **`@required` and `@default` are read**, from the 1327 annotation carrier, so a
+  schema migrated to the annotation form is enforced as the bracket form is. Two
+  spellings of one default that differ refuse the schema. An `@default` holding a
+  `big_float_value` refuses it too, until #26.
+- Bracket annotations are read from a descriptor set parsed without
+  `Pxf_Annotations_Extensions`, where they used to be ignored.
+- A message-typed `(pxf.default)` is a literal, as in the reference: a Timestamp,
+  Duration, wrapper, `pxf.BigInt`, `pxf.Decimal` or `pxf.BigFloat`. **A `{ ... }`
+  block as a default is now refused**; `defaultValue(for:)` used to accept one.
+- A `pxf.Decimal` literal binds in a schema-bound decode. A Swift `Pxf_Decimal`
+  still reads only the block form.
 - **A decoder with a schema now enforces the draft's binding rules across the
   whole document**, whatever the Swift type asks for. `PXFDecoder(annotations:rootMessage:)`
   rejects a singular field or a map key bound twice
@@ -58,6 +91,20 @@ lockstep across language ports when the wire format changes.
   body it stands for, list and block cells and dotted columns included
   ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
   [#23](https://github.com/trendvidia/protowire-swift/issues/23)).
+- **Every HARDENING limit is enforced and can be set per call**
+  ([#16](https://github.com/trendvidia/protowire-swift/issues/16)).
+  `PXFDecoder`, `PBDecoder`, `SBEUnmarshaller` and `PXF.Parser` gain a `limits`
+  property of the new `Hardening.Limits`, and `SBE.View` an init parameter. The
+  defaults are the draft's constants. `MaxMessageSize` is 64 MiB, checked before
+  the input is read, and `MaxBytesLiteralLength` and `MaxRepeatedCount` equal it.
+  A 65 MiB input used to decode. `MaxNestingDepth` and `MaxNumericLiteralDigits`
+  can now be lowered. `MaxBigFloatExponent` (16384) is new on the PB read path,
+  so a `pxf.BigFloat` past it that used to decode is now refused. `DecoderError`
+  gains four cases, so an exhaustive `switch` over it needs more arms, and
+  `nestingDepthExceeded` and `numericLiteralTooLong` gain a `limit:`, so a pattern
+  that binds their payload changes too.
+  `check-decode` takes `--limit NAME=VALUE`, and reads `ListHolder` and the
+  corpus's SBE rows.
 - **`swift test` compares this port with protowire-go over the whole spec
   corpus** ([#45](https://github.com/trendvidia/protowire-swift/issues/45)):
   parse verdicts, schema-bound decode verdicts, protobuf bytes and formatted text, for 250
@@ -119,8 +166,41 @@ lockstep across language ports when the wire format changes.
   and triple-quoted strings are no longer garbled.
 - `PXF.ParserError` loses `datasetDottedColumn` and `datasetCellRejected` and
   gains `datasetColumn` and `lexical`, so an exhaustive `switch` needs updating.
+- **`dump-envelope --vector zero-map-entry`** prints the wire vector of
+  [trendvidia/protowire#295](https://github.com/trendvidia/protowire/issues/295),
+  and an unknown vector exits 3 with `not-implemented: <name>`
+  ([#15](https://github.com/trendvidia/protowire-swift/issues/15)).
+
+### Changed
+
+- **`PBEncoder` leaves out zero values, as protowire-go does**
+  ([#14](https://github.com/trendvidia/protowire-swift/issues/14)). A
+  non-optional scalar, string, bytes, list or map at zero writes nothing, so
+  the bytes change for any such field. An `Optional` holding a value is written
+  even at zero, which is how a type marks a proto3 `optional` field. A
+  non-optional message is still written when empty, matching the reference for
+  a struct value. List elements and map entries keep their zeros.
+- **`PBDecoder` reads an absent field as zero** for a non-optional property,
+  where it used to throw. Bytes from any port that omits zeros decode now.
+- `Envelope`, `AppError` and `FieldError` no longer write an empty string or
+  bytes held in an `Optional`, because `envelope.proto` has no `optional`
+  fields.
 
 ### Fixed
+
+- `PBEncoder` throws on a field number too wide for an `Int32`, where it
+  trapped. `PBDecoder` throws on a varint too wide for an
+  `Int32` or narrower field, where it trapped. Lists of `UInt32`, `UInt16`,
+  `UInt8`, `Int16` and `Int8` no longer overflow the stack.
+
+### Fixed
+
+- **SBE decoding refuses what the bytes can't hold**
+  ([#16](https://github.com/trendvidia/protowire-swift/issues/16)). A wire block
+  shorter than the template's, or longer than the input, trapped
+  `SBEUnmarshaller`. A truncated group ended the list early with no error, and
+  `SBE.View` trapped later, reading it. Both now throw, as protowire-go does, and
+  `SBE.View` checks every group header when it is created.
 
 - **`PXF.Result` reports a keyed entry's key field, and every other nested
   field, at its real path** ([trendvidia/protowire-go#214](https://github.com/trendvidia/protowire-go/issues/214)).

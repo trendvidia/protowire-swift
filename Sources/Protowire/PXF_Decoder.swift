@@ -53,6 +53,9 @@ public final class PXFDecoder {
     var lastBound: PXF.BoundMessage?
     var lastBoundRows: [PXF.BoundMessage] = []
 
+    /// The limits for each decode call; the `Hardening` constants by default.
+    public var limits = Hardening.Limits()
+
     /// Initializes a new `PXFDecoder`.
     public init() {}
 
@@ -66,7 +69,7 @@ public final class PXFDecoder {
     /// before one is read: a bad schema fails on every input.
     private func validateSchema() throws {
         guard let annotations, let root = rootMessage else { return }
-        try annotations.validateRequiredDefault(message: root)
+        try annotations.validateSchema(message: root)
     }
 
     /// What the Swift type sees: `entries` with keyed bindings rewritten to
@@ -76,14 +79,16 @@ public final class PXFDecoder {
     private func bind(_ entries: [PXF.Entry]) throws -> [PXF.Entry] {
         guard let annotations, let root = rootMessage else {
             try PXF.Annotations.rejectQuotedNames(entries)
+            try checkRepeatedCounts(entries)
             return entries
         }
         try annotations.validateKeyPlacement(message: root)
         let expanded = try annotations.expandKeyed(entries, message: root)
         try PXF.Annotations.rejectQuotedNames(expanded)
         let resolve = typeResolver.map { resolver in { (url: String) in resolver.resolve(typeURL: url) != nil } }
-        let binder = PXF.Binder(annotations: annotations, resolve: resolve, discardUnknown: discardUnknown)
+        let binder = PXF.Binder(annotations: annotations, resolve: resolve, discardUnknown: discardUnknown, limits: limits)
         let bound = try binder.bind(expanded, message: root)
+        try checkRepeatedCounts(bound.entries)
         lastBound = bound.message
         return bound.entries
     }
@@ -98,11 +103,10 @@ public final class PXFDecoder {
         let annotations = annotations
         let binder = annotations.map { annotations in
             PXF.Binder(annotations: annotations, resolve: typeResolver.map { resolver in { resolver.resolve(typeURL: $0) != nil } },
-                       discardUnknown: discardUnknown)
+                       discardUnknown: discardUnknown, limits: limits)
         }
         if let annotations, !dataset.rows.isEmpty {
-            try annotations.validateRequiredDefault(message: dataset.type)
-            try annotations.validateKeyPlacement(message: dataset.type)
+            try annotations.validateSchema(message: dataset.type)
         }
         return try dataset.rows.map { row in
             guard let binder else {
@@ -114,6 +118,28 @@ public final class PXFDecoder {
         }
     }
 
+    /// An element takes at least a byte of input, so at the default limits
+    /// there is nothing to count.
+    private func checkRepeatedCounts(_ entries: [PXF.Entry]) throws {
+        if limits.maxRepeatedCount < limits.maxMessageSize {
+            try PXF.checkRepeatedCounts(entries, limit: limits.maxRepeatedCount)
+        }
+    }
+
+    /// The size check comes first, so an oversized input is not even tokenized.
+    private func parse(_ data: Data) throws -> PXF.Document {
+        try limits.checkMessageSize(data.count)
+        let parser = PXF.Parser(input: data)
+        parser.limits = limits
+        return try parser.parseDocument()
+    }
+
+    /// As `parse(_:)`, for a string, which is not copied if it is too large.
+    private func parse(_ string: String) throws -> PXF.Document {
+        try limits.checkMessageSize(string.utf8.count)
+        return try parse(Data(string.utf8))
+    }
+
     /// Decodes a value of the given type from PXF data.
     /// - Parameters:
     ///   - type: The type of value to decode.
@@ -122,7 +148,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         try validateSchema()
-        let doc = try PXF.Parser(input: data).parseDocument()
+        let doc = try parse(data)
         let entries = try bind(doc.entries)
         let decoder = _PXFDecoder(entries: entries, typeResolver: typeResolver)
         return try T(from: decoder)
@@ -136,7 +162,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from string: String) throws -> T {
         try validateSchema()
-        let doc = try PXF.Parser(string: string).parseDocument()
+        let doc = try parse(string)
         let entries = try bind(doc.entries)
         let decoder = _PXFDecoder(entries: entries, typeResolver: typeResolver)
         return try T(from: decoder)
@@ -150,7 +176,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func unmarshalFull<T: Decodable>(_ type: T.Type, from string: String) throws -> (T, PXF.Result) {
         try validateSchema()
-        let doc = try PXF.Parser(string: string).parseDocument()
+        let doc = try parse(string)
         let entries = try bind(doc.entries)
         var result = PXF.Result()
         // Surface document-root directives on the result so callers can
@@ -268,7 +294,13 @@ private final class _PXFDecoder: Swift.Decoder {
 
         func decodeNil(forKey k: Key) throws -> Bool {
             let found = bindings(k)
-            guard let e = found.first else { return true }
+            guard let e = found.first else {
+                // The mask is synthesized, so it has no entry to find.
+                if k.stringValue == "_null", codingPath.isEmpty, decoder.result?.pointee.nullMaskPaths.isEmpty == false {
+                    return false
+                }
+                return true
+            }
             // A second binding is an error for a singular field and fine for
             // a list; only the type asked for says which, so this leaves it to
             // decode, unless the second one is what makes it singular: a null.
@@ -677,6 +709,11 @@ fileprivate final class _PXFSingleValueDecoder: Swift.Decoder, _PXFValueHolder {
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
+        // `Data` reads itself as a list of bytes, wherever it sits.
+        if let v = value as? PXF.BytesVal {
+            let bytes = v.value.map { PXF.IntVal(pos: v.pos, raw: String($0)) as PXF.Value }
+            return try _PXFUnkeyedDecoder(elements: bytes, codingPath: codingPath).unkeyedContainer()
+        }
         throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
             debugDescription: "PXF: single value cannot be decoded as unkeyed container"))
     }
@@ -687,7 +724,7 @@ extension _PXFSingleValueDecoder: SingleValueDecodingContainer {
     func decodeNil() -> Bool { value is PXF.NullVal }
     func decode(_ t: Bool.Type) throws -> Bool { if let v = value as? PXF.BoolVal { return v.value }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: String.Type) throws -> String { if let v = value as? PXF.StringVal { return v.value }; if let v = value as? PXF.IdentVal { return v.name }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
-    func decode(_ t: Double.Type) throws -> Double { if let v = value as? PXF.FloatVal, let n = Double(v.raw) { return n }; if let v = value as? PXF.IntVal, let n = Double(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
+    func decode(_ t: Double.Type) throws -> Double { if let v = value as? PXF.TimestampVal { return v.value.timeIntervalSinceReferenceDate }; if let v = value as? PXF.FloatVal, let n = Double(v.raw) { return n }; if let v = value as? PXF.IntVal, let n = Double(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: Float.Type) throws -> Float { if let v = value as? PXF.FloatVal, let n = Float(v.raw) { return n }; if let v = value as? PXF.IntVal, let n = Float(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: Int.Type) throws -> Int { if let v = value as? PXF.IntVal, let n = Int(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: Int8.Type) throws -> Int8 { if let v = value as? PXF.IntVal, let n = Int8(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }

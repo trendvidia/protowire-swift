@@ -221,7 +221,7 @@ final class PXFAnnotationsTests: XCTestCase {
         XCTAssertEqual((try a.defaultValue(for: f(.uint64, "18446744073709551615")) as? PXF.IntVal)?.raw, "18446744073709551615")
         XCTAssertThrowsError(try a.defaultValue(for: f(.int32, "2147483648")), "out of int32 range")
         XCTAssertThrowsError(try a.defaultValue(for: f(.bytes, "not base64!")))
-        XCTAssertNotNil(try a.defaultValue(for: f(.message, "{ max = 1 }")) as? PXF.BlockVal)
+        XCTAssertThrowsError(try a.defaultValue(for: f(.message, "{ max = 1 }")), "a block is not a literal")
         XCTAssertThrowsError(try a.defaultValue(for: f(.message, "42")))
         XCTAssertNil(try a.defaultValue(for: PXF.Annotations.Field(name: "x", number: 1, type: .int32, typeName: nil, isRepeated: false, isMap: false, required: false, defaultLiteral: nil)))
     }

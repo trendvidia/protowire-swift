@@ -24,6 +24,9 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_Keyed.swift` — keyed repeated fields: rules, placement, canonical form.
 - `PXF_Decoder.swift`, `PXF_Encoder.swift` — Codable bridges.
 - `PXF_Result.swift` — per-field presence (set / null / absent).
+- `PXF_Annotations.swift`, `PXF_Carrier.swift` — the descriptor index, and both
+  spellings of an annotation: bracket options and the 1327 carrier.
+- `PXF_Bind.swift` — the schema-bound pass (design call 8).
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
   — SBE primitives + dictionary codec + zero-copy reader.
 - `Envelope.swift` — hand-written `Envelope`/`AppError`/`FieldError`.
@@ -115,28 +118,28 @@ record with `conformance/update.sh`.
    in protowire-go. `BoundMessage` stays internal: the Codable bridge remains
    the public API, and the bytes exist so `ConformanceTests` can compare them.
 
+9. **The encoder builds a tree, and one function renders it.** `PXFEncoder`
+   turns a value into a `PXFNode`, and `PXFRenderer` writes the text, which is
+   where a schema changes the output. `PXF_BoundText.swift` puts a `BoundMessage`
+   through the same containers a user's type uses, so the `text` leg of
+   `ConformanceTests` exercises the real encoder.
+
+10. **A literal carries its call's digit cap.** `Hardening.Limits` reaches the
+   parser and the PB and SBE decoders directly. The Codable containers don't
+   hold it, so `PXF.Parser` writes `MaxNumericLiteralDigits` onto each `IntVal`
+   for a big-number type to read. A list's or map's count is checked by the
+   parser as it reads, and across bindings by `PXF.checkRepeatedCounts`.
+
 ## Open gaps (not yet implemented)
 
-- **`(pxf.required)` / `(pxf.default)` annotation enforcement.** The
-  Go / C# / Rust / Java / TypeScript ports all enforce these via
-  descriptor-level reflection at decode time (validate required, apply
-  default for absent-not-null). Swift's swift-protobuf runtime doesn't
-  expose a runtime reflection API comparable to
-  `Google.Protobuf.Reflection.IFieldAccessor` — its design is
-  codegen-driven, with each generated message type having hand-written
-  `traverse` / `decodeMessage` methods rather than a generic descriptor
-  walk. Closing the gap means either: (a) building a Swift descriptor
-  reflection layer on top of `Google_Protobuf_FileDescriptorProto` and
-  `Google_Protobuf_FieldOptions`, or (b) introducing a marker protocol
-  (`PXFAnnotated`) that user Codable types opt into to declare
-  required/default field metadata. Neither path has been started.
-- **Descriptor-driven SBE codec.** Go/C++/Rust/Java/C# all have a
-  `Codec(file_descriptor)` that builds a `MessageTemplate` from
-  `(sbe.template_id)` / `(sbe.length)` / `(sbe.encoding)` annotations
-  on a proto file. Swift's SBE codec is dictionary-template-driven —
-  users hand-build `SBE.MessageTemplate` instances. The cross-port
-  `bench-sbe` harness isn't shipped because the canonical 94-byte
-  layout requires the descriptor-driven path.
+- **The remaining bind-time checks.** `validateSchema` covers `(pxf.key)`,
+  default placement, the oneof rules, required with default and duplicate
+  names. Reserved names, retired option numbers and well-known shapes are
+  tracked in #55.
+- **Message-typed SBE codec.** `SBE.templates(from:)` builds a
+  `MessageTemplate` from a descriptor set, but the codec reads and writes
+  dictionaries, not message types. The cross-port `bench-sbe` harness isn't
+  shipped.
 
 ## What this repo does NOT contain
 
@@ -153,7 +156,7 @@ record with `conformance/update.sh`.
   envelope check: `bash ../protowire/scripts/cross_envelope_check.sh`
   (set `SKIP_PORTS=swift` if the swift bench harness is the thing that
   broke).
-- Cross-port bench harnesses (`bench-pxf`, `bench-sbe`, `dump-envelope`)
+- Cross-port bench harnesses (`bench-pxf`, `dump-envelope`)
   are SwiftPM `executableTarget`s — see `Package.swift`. They each take
   `--seconds N` and `--testdata DIR` and emit one JSON line per op,
   matching the shape that `cross_*_bench.sh` aggregates.

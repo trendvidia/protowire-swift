@@ -30,9 +30,20 @@ extension Dictionary: _PBMap where Key: Decodable, Value: Decodable {
     }
 }
 
+protocol _PBOptional { var pbWrapped: Encodable? { get } }
+extension Optional: _PBOptional where Wrapped: Encodable {
+    var pbWrapped: Encodable? { self.map { $0 } }
+}
+
 // MARK: - Encoder
 
 /// An encoder that serializes `Encodable` types into Protobuf binary format.
+///
+/// A field follows proto3 implicit presence, as in the reference: a non-optional
+/// scalar, string, bytes, list or map at its zero value writes nothing. An
+/// `Optional` holding a value is written at zero too, which is how a type marks
+/// a proto3 `optional` field. A non-optional message is always written, and a
+/// nil one is absent. List elements and map entries keep their zeros.
 public final class PBEncoder {
     /// Initializes a new `PBEncoder`.
     public init() {}
@@ -53,41 +64,91 @@ private final class _PBEncoder: Encoder {
     struct KeyedContainer<Key: CodingKey>: KeyedEncodingContainerProtocol {
         var encoder: _PBEncoder; var codingPath: [CodingKey] = []
         mutating func encodeNil(forKey k: Key) throws {}
-        mutating func encode(_ v: Bool, forKey k: Key) throws { try tag(k, .varint); Protowire.appendVarint(&encoder.data, v ? 1 : 0) }
-        mutating func encode(_ v: String, forKey k: Key) throws { try tag(k, .bytes); Protowire.appendString(&encoder.data, v) }
-        mutating func encode(_ v: Int, forKey k: Key) throws { try i64(Int64(v), k) }
-        mutating func encode(_ v: Int8, forKey k: Key) throws { try i64(Int64(v), k) }
-        mutating func encode(_ v: Int16, forKey k: Key) throws { try i64(Int64(v), k) }
-        mutating func encode(_ v: Int32, forKey k: Key) throws { try i64(Int64(v), k) }
-        mutating func encode(_ v: Int64, forKey k: Key) throws { try i64(v, k) }
-        mutating func encode(_ v: UInt, forKey k: Key) throws { try u64(UInt64(v), k) }
-        mutating func encode(_ v: UInt8, forKey k: Key) throws { try u64(UInt64(v), k) }
-        mutating func encode(_ v: UInt16, forKey k: Key) throws { try u64(UInt64(v), k) }
-        mutating func encode(_ v: UInt32, forKey k: Key) throws { try u64(UInt64(v), k) }
-        mutating func encode(_ v: UInt64, forKey k: Key) throws { try u64(v, k) }
-        mutating func encode(_ v: Float, forKey k: Key) throws { try tag(k, .fixed32); Protowire.appendFixed32(&encoder.data, v.bitPattern) }
-        mutating func encode(_ v: Double, forKey k: Key) throws { try tag(k, .fixed64); Protowire.appendFixed64(&encoder.data, v.bitPattern) }
 
-        mutating func encode<T: Encodable>(_ v: T, forKey k: Key) throws {
-            if let d = v as? Data { try tag(k, .bytes); Protowire.appendBytes(&encoder.data, d); return }
-            if let s = v as? String { try encode(s, forKey: k); return }
-            if let b = v as? Bool { try encode(b, forKey: k); return }
-            if let i = v as? Int { try encode(i, forKey: k); return }
-            if let i = v as? Int32 { try encode(i, forKey: k); return }
-            if let i = v as? Int64 { try encode(i, forKey: k); return }
-            
+        // proto3 implicit presence: a non-optional field at its zero value is
+        // not on the wire, as in the reference. `-0.0 == 0`, so a negative
+        // zero is skipped too, which is what the reference does.
+        mutating func encode(_ v: Bool, forKey k: Key) throws { if v { try bool(v, k) } }
+        mutating func encode(_ v: String, forKey k: Key) throws { if !v.isEmpty { try string(v, k) } }
+        mutating func encode(_ v: Int, forKey k: Key) throws { if v != 0 { try i64(Int64(v), k) } }
+        mutating func encode(_ v: Int8, forKey k: Key) throws { if v != 0 { try i64(Int64(v), k) } }
+        mutating func encode(_ v: Int16, forKey k: Key) throws { if v != 0 { try i64(Int64(v), k) } }
+        mutating func encode(_ v: Int32, forKey k: Key) throws { if v != 0 { try i64(Int64(v), k) } }
+        mutating func encode(_ v: Int64, forKey k: Key) throws { if v != 0 { try i64(v, k) } }
+        mutating func encode(_ v: UInt, forKey k: Key) throws { if v != 0 { try u64(UInt64(v), k) } }
+        mutating func encode(_ v: UInt8, forKey k: Key) throws { if v != 0 { try u64(UInt64(v), k) } }
+        mutating func encode(_ v: UInt16, forKey k: Key) throws { if v != 0 { try u64(UInt64(v), k) } }
+        mutating func encode(_ v: UInt32, forKey k: Key) throws { if v != 0 { try u64(UInt64(v), k) } }
+        mutating func encode(_ v: UInt64, forKey k: Key) throws { if v != 0 { try u64(v, k) } }
+        mutating func encode(_ v: Float, forKey k: Key) throws { if v != 0 { try f32(v, k) } }
+        mutating func encode(_ v: Double, forKey k: Key) throws { if v != 0 { try f64(v, k) } }
+
+        // An `Optional` that holds a value is written whatever the value:
+        // this is how a type says a proto3 `optional` field is set. A
+        // synthesized `encode(to:)` calls these for an `Optional` property.
+        mutating func encodeIfPresent(_ v: Bool?, forKey k: Key) throws { if let v { try bool(v, k) } }
+        mutating func encodeIfPresent(_ v: String?, forKey k: Key) throws { if let v { try string(v, k) } }
+        mutating func encodeIfPresent(_ v: Int?, forKey k: Key) throws { if let v { try i64(Int64(v), k) } }
+        mutating func encodeIfPresent(_ v: Int8?, forKey k: Key) throws { if let v { try i64(Int64(v), k) } }
+        mutating func encodeIfPresent(_ v: Int16?, forKey k: Key) throws { if let v { try i64(Int64(v), k) } }
+        mutating func encodeIfPresent(_ v: Int32?, forKey k: Key) throws { if let v { try i64(Int64(v), k) } }
+        mutating func encodeIfPresent(_ v: Int64?, forKey k: Key) throws { if let v { try i64(v, k) } }
+        mutating func encodeIfPresent(_ v: UInt?, forKey k: Key) throws { if let v { try u64(UInt64(v), k) } }
+        mutating func encodeIfPresent(_ v: UInt8?, forKey k: Key) throws { if let v { try u64(UInt64(v), k) } }
+        mutating func encodeIfPresent(_ v: UInt16?, forKey k: Key) throws { if let v { try u64(UInt64(v), k) } }
+        mutating func encodeIfPresent(_ v: UInt32?, forKey k: Key) throws { if let v { try u64(UInt64(v), k) } }
+        mutating func encodeIfPresent(_ v: UInt64?, forKey k: Key) throws { if let v { try u64(v, k) } }
+        mutating func encodeIfPresent(_ v: Float?, forKey k: Key) throws { if let v { try f32(v, k) } }
+        mutating func encodeIfPresent(_ v: Double?, forKey k: Key) throws { if let v { try f64(v, k) } }
+        mutating func encodeIfPresent<T: Encodable>(_ v: T?, forKey k: Key) throws { if let v { try write(v, k, set: true) } }
+
+        mutating func encode<T: Encodable>(_ v: T, forKey k: Key) throws { try write(v, k, set: false) }
+
+        /// Writes one value. `set` means it is written at zero too: it is an
+        /// `Optional` holding a value, a repeated element, or a map entry's
+        /// key or value, none of which can be read back without their record.
+        mutating func write(_ v: Encodable, _ k: Key, set: Bool) throws {
+            if let o = v as? _PBOptional {
+                if let wrapped = o.pbWrapped { try write(wrapped, k, set: true) }
+                return
+            }
+            switch v {
+            case let x as Data: if set || !x.isEmpty { try tag(k, .bytes); Protowire.appendBytes(&encoder.data, x) }
+            case let x as String: if set || !x.isEmpty { try string(x, k) }
+            case let x as Bool: if set || x { try bool(x, k) }
+            case let x as Int: if set || x != 0 { try i64(Int64(x), k) }
+            case let x as Int8: if set || x != 0 { try i64(Int64(x), k) }
+            case let x as Int16: if set || x != 0 { try i64(Int64(x), k) }
+            case let x as Int32: if set || x != 0 { try i64(Int64(x), k) }
+            case let x as Int64: if set || x != 0 { try i64(x, k) }
+            case let x as UInt: if set || x != 0 { try u64(UInt64(x), k) }
+            case let x as UInt8: if set || x != 0 { try u64(UInt64(x), k) }
+            case let x as UInt16: if set || x != 0 { try u64(UInt64(x), k) }
+            case let x as UInt32: if set || x != 0 { try u64(UInt64(x), k) }
+            case let x as UInt64: if set || x != 0 { try u64(x, k) }
+            case let x as Float: if set || x != 0 { try f32(x, k) }
+            case let x as Double: if set || x != 0 { try f64(x, k) }
+            default: try writeComposite(v, k, set: set)
+            }
+        }
+
+        private mutating func writeComposite(_ v: Encodable, _ k: Key, set: Bool) throws {
             let m = Mirror(reflecting: v)
             if m.displayStyle == .enum {
                 let sub = _PBEncoder(); try v.encode(to: sub)
-                try tag(k, .varint); encoder.data.append(sub.data); return
+                if set || sub.data != Data([0]) { try tag(k, .varint); encoder.data.append(sub.data) }
+                return
             }
             if m.displayStyle == .collection {
-                if let at = T.self as? _PBArray.Type, isPackable(at.elementType) {
+                // An empty list has no wire form, set or not.
+                if m.children.isEmpty { return }
+                if let at = type(of: v) as? _PBArray.Type, isPackable(at.elementType) {
                     let sub = _PBEncoder()
                     for c in m.children { if let e = c.value as? Encodable { try e.encode(to: sub) } }
                     try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data); return
                 }
-                for c in m.children { if let e = c.value as? Encodable { try encodeElem(e, k) } }; return
+                for c in m.children { if let e = c.value as? Encodable { try write(e, k, set: true) } }
+                return
             }
             if m.displayStyle == .dictionary {
                 for c in m.children {
@@ -98,24 +159,29 @@ private final class _PBEncoder: Encoder {
                         let sub = _PBEncoder(); try sub.encodeEntry(key: key, value: val)
                         try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data)
                     }
-                }; return
+                }
+                return
             }
+            // A message is written even when it is empty, because a
+            // non-optional message field is a set one: the reference writes
+            // the same record for a struct value, and only a nil is absent.
             let sub = _PBEncoder(); try v.encode(to: sub); try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data)
         }
 
-        private mutating func encodeElem(_ v: Encodable, _ k: Key) throws {
-            if let s = v as? String { try encode(s, forKey: k) }
-            else if let i = v as? Int { try encode(i, forKey: k) }
-            else if let i = v as? Int32 { try encode(i, forKey: k) }
-            else if let i = v as? Int64 { try encode(i, forKey: k) }
-            else if let b = v as? Bool { try encode(b, forKey: k) }
-            else if let d = v as? Data { try encode(d, forKey: k) }
-            else { let sub = _PBEncoder(); try v.encode(to: sub); try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data) }
+        private mutating func tag(_ k: Key, _ t: Protowire.WireType) throws {
+            guard let n = k.intValue else { return }
+            guard let number = Int32(exactly: n) else {
+                throw EncodingError.invalidValue(n, .init(codingPath: codingPath + [k],
+                    debugDescription: "PB: field number \(n) does not fit an Int32"))
+            }
+            Protowire.appendTag(&encoder.data, number: number, type: t)
         }
-
-        private mutating func tag(_ k: Key, _ t: Protowire.WireType) throws { guard let n = k.intValue else { return }; Protowire.appendTag(&encoder.data, number: Int32(n), type: t) }
+        private mutating func bool(_ v: Bool, _ k: Key) throws { try tag(k, .varint); Protowire.appendVarint(&encoder.data, v ? 1 : 0) }
+        private mutating func string(_ v: String, _ k: Key) throws { try tag(k, .bytes); Protowire.appendString(&encoder.data, v) }
         private mutating func i64(_ v: Int64, _ k: Key) throws { try tag(k, .varint); Protowire.appendVarint(&encoder.data, UInt64(bitPattern: v)) }
         private mutating func u64(_ v: UInt64, _ k: Key) throws { try tag(k, .varint); Protowire.appendVarint(&encoder.data, v) }
+        private mutating func f32(_ v: Float, _ k: Key) throws { try tag(k, .fixed32); Protowire.appendFixed32(&encoder.data, v.bitPattern) }
+        private mutating func f64(_ v: Double, _ k: Key) throws { try tag(k, .fixed64); Protowire.appendFixed64(&encoder.data, v.bitPattern) }
 
         mutating func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) -> KeyedEncodingContainer<N> { fatalError() }
         mutating func nestedUnkeyedContainer(forKey k: Key) -> UnkeyedEncodingContainer { fatalError() }
@@ -136,7 +202,8 @@ private final class _PBEncoder: Encoder {
     }
 
     func encodeEntry(key: Encodable, value: Encodable) throws {
-        var c = KeyedContainer<PB.MapKey>(encoder: self); try c.encode(key, forKey: .key); try c.encode(value, forKey: .value)
+        // Both fields, zero or not (protowire#295).
+        var c = KeyedContainer<PB.MapKey>(encoder: self); try c.write(key, .key, set: true); try c.write(value, .value, set: true)
     }
 }
 
@@ -147,9 +214,14 @@ extension _PBEncoder: SingleValueEncodingContainer {
     func encode(_ v: Double) throws { Protowire.appendFixed64(&data, v.bitPattern) }
     func encode(_ v: Float) throws { Protowire.appendFixed32(&data, v.bitPattern) }
     func encode(_ v: Int) throws { Protowire.appendVarint(&data, UInt64(bitPattern: Int64(v))) }
+    func encode(_ v: Int8) throws { Protowire.appendVarint(&data, UInt64(bitPattern: Int64(v))) }
+    func encode(_ v: Int16) throws { Protowire.appendVarint(&data, UInt64(bitPattern: Int64(v))) }
     func encode(_ v: Int32) throws { Protowire.appendVarint(&data, UInt64(bitPattern: Int64(v))) }
     func encode(_ v: Int64) throws { Protowire.appendVarint(&data, UInt64(bitPattern: v)) }
     func encode(_ v: UInt) throws { Protowire.appendVarint(&data, UInt64(v)) }
+    func encode(_ v: UInt8) throws { Protowire.appendVarint(&data, UInt64(v)) }
+    func encode(_ v: UInt16) throws { Protowire.appendVarint(&data, UInt64(v)) }
+    func encode(_ v: UInt32) throws { Protowire.appendVarint(&data, UInt64(v)) }
     func encode(_ v: UInt64) throws { Protowire.appendVarint(&data, v) }
     func encode<T: Encodable>(_ v: T) throws { try v.encode(to: self) }
 }
@@ -158,6 +230,9 @@ extension _PBEncoder: SingleValueEncodingContainer {
 
 /// A decoder that deserializes `Decodable` types from Protobuf binary format.
 public final class PBDecoder {
+    /// The limits for each decode call; the `Hardening` constants by default.
+    public var limits = Hardening.Limits()
+
     /// Initializes a new `PBDecoder`.
     public init() {}
     
@@ -168,24 +243,39 @@ public final class PBDecoder {
     /// - Returns: The decoded value.
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ t: T.Type, from d: Data) throws -> T {
-        let dec = try _PBDecoder(data: d)
+        try limits.checkMessageSize(d.count)
+        let dec = try _PBDecoder(data: d, limits: limits)
         return try T(from: dec)
     }
 }
 
-private final class _PBDecoder: Decoder {
+private final class _PBDecoder: Decoder, _PBLimited {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]
     let data: Data
     let depth: Int
+    let limits: Hardening.Limits
+    /// Stands in for a field absent from the wire: every value reads as zero.
+    let absent: Bool
     private var _fields: [Int32: [Data]]?
     private var _fieldsError: Error?
 
-    init(data: Data, depth: Int = 0) throws {
-        if depth > Hardening.maxNestingDepth {
-            throw DecoderError.nestingDepthExceeded(depth)
+    init(data: Data, depth: Int = 0, limits: Hardening.Limits, absent: Bool = false) throws {
+        if depth > limits.maxNestingDepth {
+            throw DecoderError.nestingDepthExceeded(depth, limit: limits.maxNestingDepth)
         }
         self.data = data
         self.depth = depth
+        self.limits = limits
+        self.absent = absent
+    }
+
+    /// The value of a field the wire does not carry: proto3 omits zeros, so
+    /// absent reads as zero for a non-optional property.
+    func zero<T: Decodable>(_ t: T.Type) throws -> T {
+        if T.self == Data.self { return Data() as! T }
+        if let at = T.self as? _PBArray.Type { return at.init(elements: []) as! T }
+        if let mt = T.self as? _PBMap.Type { return mt.init(entries: []) as! T }
+        return try T(from: _PBDecoder(data: Data(), depth: depth + 1, limits: limits, absent: true))
     }
 
     /// Lazily walks the buffer once, caching either the field map or the
@@ -244,24 +334,35 @@ private final class _PBDecoder: Decoder {
         if type is String.Type { if let (v, n) = Protowire.consumeString(data) { return (v, n) } }
         if type is Bool.Type { if let (v, n) = Protowire.consumeVarint(data) { return (v != 0, n) } }
         if type is Int.Type { if let (v, n) = Protowire.consumeVarint(data) { return (Int(Int64(bitPattern: v)), n) } }
-        if type is Int32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (Int32(Int64(bitPattern: v)), n) } }
+        if type is Int8.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(Int8(exactly: Int64(bitPattern: v))), n) } }
+        if type is Int16.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(Int16(exactly: Int64(bitPattern: v))), n) } }
+        if type is Int32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(Int32(exactly: Int64(bitPattern: v))), n) } }
         if type is Int64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (Int64(bitPattern: v), n) } }
-        if type is UInt.Type { if let (v, n) = Protowire.consumeVarint(data) { return (UInt(v), n) } }
+        if type is UInt.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt(exactly: v)), n) } }
+        if type is UInt8.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt8(exactly: v)), n) } }
+        if type is UInt16.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt16(exactly: v)), n) } }
+        if type is UInt32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt32(exactly: v)), n) } }
         if type is UInt64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (v, n) } }
         if type is Float.Type { if let (v, n) = Protowire.consumeFixed32(data) { return (Float(bitPattern: v), n) } }
         if type is Double.Type { if let (v, n) = Protowire.consumeFixed64(data) { return (Double(bitPattern: v), n) } }
         
         if let decType = type as? Decodable.Type {
             if let (bytes, n) = Protowire.consumeBytes(data) {
-                let sub = try _PBDecoder(data: bytes, depth: depth + 1)
+                let sub = try _PBDecoder(data: bytes, depth: depth + 1, limits: limits)
                 return (try decType.init(from: sub), n)
             }
             if let (_, n) = Protowire.consumeVarint(data) {
-                let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1)
+                let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1, limits: limits)
                 return (try decType.init(from: sub), n)
             }
         }
         return nil
+    }
+
+    /// A varint too wide for the Swift type is an error, never a trap.
+    private func narrow<T>(_ v: T?) throws -> T {
+        guard let v else { throw PB.Error.corruptData }
+        return v
     }
 
     struct KeyedContainer<Key: CodingKey>: KeyedDecodingContainerProtocol {
@@ -279,20 +380,27 @@ private final class _PBDecoder: Decoder {
             if let err = decoder.fieldsError { throw err }
             return !contains(k)
         }
-        func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { return try decoder.decodeAny(t, from: try getData(k)) as! Bool }
-        func decode(_ t: String.Type, forKey k: Key) throws -> String { return try decoder.decodeAny(t, from: try getData(k)) as! String }
-        func decode(_ t: Int.Type, forKey k: Key) throws -> Int { return try decoder.decodeAny(t, from: try getData(k)) as! Int }
-        func decode(_ t: Int8.Type, forKey k: Key) throws -> Int8 { return Int8(try decoder.decodeAny(Int.self, from: try getData(k)) as! Int) }
-        func decode(_ t: Int16.Type, forKey k: Key) throws -> Int16 { return Int16(try decoder.decodeAny(Int.self, from: try getData(k)) as! Int) }
-        func decode(_ t: Int32.Type, forKey k: Key) throws -> Int32 { return try decoder.decodeAny(t, from: try getData(k)) as! Int32 }
-        func decode(_ t: Int64.Type, forKey k: Key) throws -> Int64 { return try decoder.decodeAny(t, from: try getData(k)) as! Int64 }
-        func decode(_ t: UInt.Type, forKey k: Key) throws -> UInt { return try decoder.decodeAny(t, from: try getData(k)) as! UInt }
-        func decode(_ t: UInt8.Type, forKey k: Key) throws -> UInt8 { return UInt8(try decoder.decodeAny(UInt.self, from: try getData(k)) as! UInt) }
-        func decode(_ t: UInt16.Type, forKey k: Key) throws -> UInt16 { return UInt16(try decoder.decodeAny(UInt.self, from: try getData(k)) as! UInt) }
-        func decode(_ t: UInt32.Type, forKey k: Key) throws -> UInt32 { return UInt32(try decoder.decodeAny(UInt.self, from: try getData(k)) as! UInt) }
-        func decode(_ t: UInt64.Type, forKey k: Key) throws -> UInt64 { return try decoder.decodeAny(t, from: try getData(k)) as! UInt64 }
-        func decode(_ t: Float.Type, forKey k: Key) throws -> Float { return try decoder.decodeAny(t, from: try getData(k)) as! Float }
-        func decode(_ t: Double.Type, forKey k: Key) throws -> Double { return try decoder.decodeAny(t, from: try getData(k)) as! Double }
+        /// A scalar field, which reads as `zero` when it is not on the wire.
+        private func scalar<T>(_ t: T.Type, _ k: Key, zero: T) throws -> T {
+            if let err = decoder.fieldsError { throw err }
+            guard k.intValue != nil else { throw PB.Error.corruptData }
+            guard contains(k) else { return zero }
+            return try decoder.decodeAny(t, from: try getData(k)) as! T
+        }
+        func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { try scalar(t, k, zero: false) }
+        func decode(_ t: String.Type, forKey k: Key) throws -> String { try scalar(t, k, zero: "") }
+        func decode(_ t: Int.Type, forKey k: Key) throws -> Int { try scalar(t, k, zero: 0) }
+        func decode(_ t: Int8.Type, forKey k: Key) throws -> Int8 { try scalar(t, k, zero: 0) }
+        func decode(_ t: Int16.Type, forKey k: Key) throws -> Int16 { try scalar(t, k, zero: 0) }
+        func decode(_ t: Int32.Type, forKey k: Key) throws -> Int32 { try scalar(t, k, zero: 0) }
+        func decode(_ t: Int64.Type, forKey k: Key) throws -> Int64 { try scalar(t, k, zero: 0) }
+        func decode(_ t: UInt.Type, forKey k: Key) throws -> UInt { try scalar(t, k, zero: 0) }
+        func decode(_ t: UInt8.Type, forKey k: Key) throws -> UInt8 { try scalar(t, k, zero: 0) }
+        func decode(_ t: UInt16.Type, forKey k: Key) throws -> UInt16 { try scalar(t, k, zero: 0) }
+        func decode(_ t: UInt32.Type, forKey k: Key) throws -> UInt32 { try scalar(t, k, zero: 0) }
+        func decode(_ t: UInt64.Type, forKey k: Key) throws -> UInt64 { try scalar(t, k, zero: 0) }
+        func decode(_ t: Float.Type, forKey k: Key) throws -> Float { try scalar(t, k, zero: 0) }
+        func decode(_ t: Double.Type, forKey k: Key) throws -> Double { try scalar(t, k, zero: 0) }
 
         func decodeIfPresent<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? {
             if let err = decoder.fieldsError { throw err }
@@ -301,7 +409,8 @@ private final class _PBDecoder: Decoder {
 
         func decode<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T {
             if let err = decoder.fieldsError { throw err }
-            guard let n = k.intValue, let dl = decoder.fields[Int32(n)] else { throw DecodingError.keyNotFound(k, .init(codingPath: codingPath, debugDescription: "")) }
+            guard let n = k.intValue else { throw DecodingError.keyNotFound(k, .init(codingPath: codingPath, debugDescription: "")) }
+            guard let dl = decoder.fields[Int32(n)] else { return try decoder.zero(t) }
             if let at = T.self as? _PBArray.Type {
                 var elements: [Any] = []
                 for d in dl {
@@ -310,13 +419,16 @@ private final class _PBDecoder: Decoder {
                             var rem = payload
                             while !rem.isEmpty {
                                 if let (val, n) = try decoder.decodeOne(at.elementType, from: rem) {
+                                    try decoder.limits.checkRepeated(count: elements.count)
                                     elements.append(val); rem = rem.advanced(by: n)
                                 } else { break }
                             }
                         } else {
+                            try decoder.limits.checkRepeated(count: elements.count)
                             elements.append(try decoder.decodeAny(at.elementType, from: d))
                         }
                     } else {
+                        try decoder.limits.checkRepeated(count: elements.count)
                         elements.append(try decoder.decodeAny(at.elementType, from: d))
                     }
                 }
@@ -325,8 +437,9 @@ private final class _PBDecoder: Decoder {
             if let mt = T.self as? _PBMap.Type {
                 var es: [(Any, Any)] = []
                 for d in dl {
+                    try decoder.limits.checkRepeated(count: es.count)
                     let eb = Protowire.consumeBytes(d)?.value ?? Data()
-                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1)
+                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1, limits: decoder.limits)
                     let key = try sub.decodeAny(mt.keyType, from: try sub.getData(tag: 1))
                     let val = try sub.decodeAny(mt.valueType, from: try sub.getData(tag: 2))
                     es.append((key, val))
@@ -358,15 +471,21 @@ private final class _PBDecoder: Decoder {
 
 extension _PBDecoder: SingleValueDecodingContainer {
     func decodeNil() -> Bool { false }
-    func decode(_ t: Bool.Type) throws -> Bool { try decodeAny(t, from: data) as! Bool }
-    func decode(_ t: String.Type) throws -> String { try decodeAny(t, from: data) as! String }
-    func decode(_ t: Double.Type) throws -> Double { try decodeAny(t, from: data) as! Double }
-    func decode(_ t: Float.Type) throws -> Float { try decodeAny(t, from: data) as! Float }
-    func decode(_ t: Int.Type) throws -> Int { try decodeAny(t, from: data) as! Int }
-    func decode(_ t: Int32.Type) throws -> Int32 { try decodeAny(t, from: data) as! Int32 }
-    func decode(_ t: Int64.Type) throws -> Int64 { try decodeAny(t, from: data) as! Int64 }
-    func decode(_ t: UInt.Type) throws -> UInt { try decodeAny(t, from: data) as! UInt }
-    func decode(_ t: UInt64.Type) throws -> UInt64 { try decodeAny(t, from: data) as! UInt64 }
+    private func value<T>(_ t: T.Type, zero: T) throws -> T { absent ? zero : try decodeAny(t, from: data) as! T }
+    func decode(_ t: Bool.Type) throws -> Bool { try value(t, zero: false) }
+    func decode(_ t: String.Type) throws -> String { try value(t, zero: "") }
+    func decode(_ t: Double.Type) throws -> Double { try value(t, zero: 0) }
+    func decode(_ t: Float.Type) throws -> Float { try value(t, zero: 0) }
+    func decode(_ t: Int.Type) throws -> Int { try value(t, zero: 0) }
+    func decode(_ t: Int8.Type) throws -> Int8 { try value(t, zero: 0) }
+    func decode(_ t: Int16.Type) throws -> Int16 { try value(t, zero: 0) }
+    func decode(_ t: Int32.Type) throws -> Int32 { try value(t, zero: 0) }
+    func decode(_ t: Int64.Type) throws -> Int64 { try value(t, zero: 0) }
+    func decode(_ t: UInt.Type) throws -> UInt { try value(t, zero: 0) }
+    func decode(_ t: UInt8.Type) throws -> UInt8 { try value(t, zero: 0) }
+    func decode(_ t: UInt16.Type) throws -> UInt16 { try value(t, zero: 0) }
+    func decode(_ t: UInt32.Type) throws -> UInt32 { try value(t, zero: 0) }
+    func decode(_ t: UInt64.Type) throws -> UInt64 { try value(t, zero: 0) }
     func decode<T: Decodable>(_ t: T.Type) throws -> T { return try T(from: self) }
 }
 
@@ -381,8 +500,8 @@ private func consumeFieldValue(tag: Int32, wireType: Protowire.WireType, data: D
 }
 
 private func isPackable(_ type: Any.Type) -> Bool {
-    return type is Int.Type || type is Int32.Type || type is Int64.Type ||
-           type is UInt.Type || type is UInt32.Type || type is UInt64.Type ||
+    return type is Int.Type || type is Int8.Type || type is Int16.Type || type is Int32.Type || type is Int64.Type ||
+           type is UInt.Type || type is UInt16.Type || type is UInt32.Type || type is UInt64.Type ||
            type is Bool.Type || type is Float.Type || type is Double.Type ||
            "\(type)".contains("Status") // Heuristic for our test enum
 }

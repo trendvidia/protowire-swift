@@ -379,6 +379,10 @@ public enum PXF {
             return String(decoding: Array(lines.joined(separator: [10])), as: UTF8.self)
         }
 
+        /// The longest `b"…"` body this lexer validates by decoding it; the
+        /// parser refuses a longer one under `MaxBytesLiteralLength`.
+        internal var maxBase64Length = Hardening.Limits().maxBase64Length
+
         private func lexBytes(_ pos: Position) -> Token {
             advance() // b
             advance() // "
@@ -388,7 +392,9 @@ public enum PXF {
                 if ch == 34 { // "
                     let raw = text(start, self.pos)
                     advance()
-                    guard Lexer.decodeBase64(raw) != nil else {
+                    // Past the limit the literal is refused from its length:
+                    // decoding it first is the cost the limit exists to avoid.
+                    guard raw.utf8.count > maxBase64Length || Lexer.decodeBase64(raw) != nil else {
                         return Token(kind: .error, value: "invalid base64 in bytes literal", pos: pos)
                     }
                     return Token(kind: .bytes, value: raw, pos: pos)

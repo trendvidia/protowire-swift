@@ -71,19 +71,30 @@ final class ConformanceTests: XCTestCase {
         try Data(contentsOf: Self.root.appendingPathComponent("corpus/\(r.suite)/\(r.file)"))
     }
 
-    /// Compares one leg. `disagreement` returns a description, or nil when
-    /// the port matches. `compared` is the positive marker that the leg ran.
-    private func run(leg: String, expectedAtLeast: Int, _ disagreement: (Record) throws -> String?) throws {
+    /// What one document did on one leg.
+    private enum Outcome {
+        /// The leg does not apply to this document.
+        case skipped
+        case matched
+        case diverged(String)
+    }
+
+    /// Compares one leg. `compared` counts the documents the leg really ran
+    /// on, as the positive marker that it ran: a skipped document is not one.
+    private func run(leg: String, expectedAtLeast: Int, _ compare: (Record) throws -> Outcome) throws {
         let ledger = Self.ledger[leg] ?? [:]
         var compared = 0
         var actual: [String: String] = [:]
         for r in Self.records {
-            guard let d = try disagreement(r) else {
-                if r.input == "pxf" || leg != "parse" { compared += 1 }
+            switch try compare(r) {
+            case .skipped:
                 continue
+            case .matched:
+                compared += 1
+            case .diverged(let d):
+                compared += 1
+                actual[r.id] = d
             }
-            compared += 1
-            actual[r.id] = d
         }
         XCTAssertGreaterThanOrEqual(compared, expectedAtLeast, "\(leg): too few documents compared")
         for (id, d) in actual.sorted(by: { $0.key < $1.key }) where ledger[id] == nil {
@@ -100,7 +111,7 @@ final class ConformanceTests: XCTestCase {
     }
 
     func testCorpusIsPresent() throws {
-        XCTAssertEqual(Self.records.count, 250)
+        XCTAssertEqual(Self.records.count, 252)
         for r in Self.records {
             XCTAssertTrue(FileManager.default.fileExists(atPath: Self.root.appendingPathComponent("corpus/\(r.suite)/\(r.file)").path), r.id)
         }
@@ -108,14 +119,14 @@ final class ConformanceTests: XCTestCase {
 
     /// The schema-less parse: the same accept or reject as `pxf.Parse`.
     func testParseVerdicts() throws {
-        try run(leg: "parse", expectedAtLeast: 180) { r in
-            guard r.input == "pxf" else { return nil }
+        try run(leg: "parse", expectedAtLeast: 181) { r in
+            guard r.input == "pxf" else { return .skipped }
             let data = try input(r)
             do {
                 _ = try PXF.Parser(input: data).parseDocument()
-                return r.parse == "accept" ? nil : "accepted; reference: \(r.parse_error ?? "")"
+                return r.parse == "accept" ? .matched : .diverged("accepted; reference: \(r.parse_error ?? "")")
             } catch {
-                return r.parse == "reject" ? nil : "rejected: \(error)"
+                return r.parse == "reject" ? .matched : .diverged("rejected: \(error)")
             }
         }
     }
@@ -123,8 +134,8 @@ final class ConformanceTests: XCTestCase {
     /// The schema-bound decode: the same accept or reject as the reference's
     /// `UnmarshalDescriptor`, or `BindRow` for a dataset's rows.
     func testDecodeVerdicts() throws {
-        try run(leg: "decode", expectedAtLeast: 180) { r in
-            guard r.input == "pxf", !r.decode.isEmpty, let message = r.message else { return nil }
+        try run(leg: "decode", expectedAtLeast: 169) { r in
+            guard r.input == "pxf", !r.decode.isEmpty, let message = r.message else { return .skipped }
             let data = try input(r)
             let annotations = try Self.schema(r.suite)
             do {
@@ -136,9 +147,9 @@ final class ConformanceTests: XCTestCase {
                 } else {
                     for dataset in doc.datasets { _ = try decoder.decodeRows(Anything.self, of: dataset) }
                 }
-                return r.decode == "accept" ? nil : "accepted; reference: \(r.decode_error ?? "")"
+                return r.decode == "accept" ? .matched : .diverged("accepted; reference: \(r.decode_error ?? "")")
             } catch {
-                return r.decode == "reject" ? nil : "rejected: \(error)"
+                return r.decode == "reject" ? .matched : .diverged("rejected: \(error)")
             }
         }
     }
@@ -146,8 +157,8 @@ final class ConformanceTests: XCTestCase {
     /// The schema-bound decode's bytes, against the reference's deterministic
     /// marshal of the message it decoded.
     func testBoundBytes() throws {
-        try run(leg: "pb", expectedAtLeast: 150) { r in
-            guard r.input == "pxf", r.decode == "accept", let message = r.message, let want = r.pb else { return nil }
+        try run(leg: "pb", expectedAtLeast: 98) { r in
+            guard r.input == "pxf", r.decode == "accept", let message = r.message, let want = r.pb else { return .skipped }
             let data = try input(r)
             let annotations = try Self.schema(r.suite)
             let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
@@ -165,22 +176,54 @@ final class ConformanceTests: XCTestCase {
                     }
                 }
             } catch {
-                return "did not decode: \(error)"
+                return .diverged("did not decode: \(error)")
             }
             let got = bound.map { $0.serialized().map { String(format: "%02x", $0) }.joined() }
-            return got == want ? nil : "bytes differ: got \(got), want \(want)"
+            return got == want ? .matched : .diverged("bytes differ: got \(got), want \(want)")
+        }
+    }
+
+    /// The marshaller: `PXFEncoder` over the bound message, against the
+    /// reference's text, the goldens of testdata/text among them.
+    func testMarshalledText() throws {
+        try run(leg: "text", expectedAtLeast: 167) { r in
+            guard r.decode == "accept", let message = r.message, let want = r.text else { return .skipped }
+            let annotations = try Self.schema(r.suite)
+            var bound: [PXF.BoundMessage] = []
+            let data = try input(r)
+            if r.input == "pb" {
+                bound = [try PXF.BoundMessage(reading: data, message: message, annotations: annotations)]
+            } else {
+                let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
+                decoder.typeResolver = Resolver(annotations: annotations)
+                guard let doc = try? PXF.Parser(input: data).parseDocument() else { return .diverged("did not parse") }
+                if doc.datasets.isEmpty {
+                    guard (try? decoder.decode(Anything.self, from: data)) != nil, let m = decoder.lastBound else { return .diverged("did not decode") }
+                    bound = [m]
+                } else {
+                    for dataset in doc.datasets {
+                        guard (try? decoder.decodeRows(Anything.self, of: dataset)) != nil else { return .diverged("did not decode") }
+                        bound += decoder.lastBoundRows
+                    }
+                }
+            }
+            let got = try bound.map { message -> String in
+                let encoder = PXFEncoder(annotations: annotations, rootMessage: message.name)
+                return try encoder.encode(PXF.BoundText(message: message, annotations: annotations))
+            }
+            return got == want ? .matched : .diverged("text differs: got \(got), want \(want)")
         }
     }
 
     /// `pxf fmt` without a schema: the same text as `pxf.FormatDocument`.
     func testFormat() throws {
-        try run(leg: "format", expectedAtLeast: 120) { r in
-            guard r.input == "pxf", let want = r.format else { return nil }
+        try run(leg: "format", expectedAtLeast: 157) { r in
+            guard r.input == "pxf", let want = r.format else { return .skipped }
             guard let doc = try? PXF.Parser(input: try input(r)).parseDocument() else {
-                return "did not parse"
+                return .diverged("did not parse")
             }
             let got = PXF.Format.formatDocument(doc)
-            return got == want ? nil : "formatted differently"
+            return got == want ? .matched : .diverged("formatted differently")
         }
     }
 }
