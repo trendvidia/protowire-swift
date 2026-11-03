@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+import Foundation
+import SwiftProtobuf
+import XCTest
+@testable import Protowire
+
+/// Compares this port with what protowire-go did to the spec corpus.
+///
+/// `testdata/conformance/reference.jsonl` is written by `conformance/refgen`,
+/// which runs every document through the reference. A disagreement fails
+/// unless `ledger.json` names it, and a ledger entry that no longer disagrees
+/// fails too, so the ledger can only shrink. See `conformance/README.md`.
+final class ConformanceTests: XCTestCase {
+    private struct Record: Decodable {
+        var suite: String
+        var file: String
+        var input: String
+        var message: String?
+        var parse: String
+        var parse_error: String?
+        var decode: String
+        var decode_error: String?
+        var pb: [String]?
+        var text: [String]?
+        var format: String?
+
+        var id: String { "\(suite)/\(file)" }
+    }
+
+    /// Reads nothing, so a decode runs the schema checks and no Swift type.
+    private struct Anything: Decodable {
+        init(from decoder: Decoder) throws {}
+    }
+
+    /// The spec tests' resolver: the message named after the URL's last "/".
+    private struct Resolver: PXF.TypeResolver {
+        let annotations: PXF.Annotations
+        func resolve(typeURL: String) -> Decodable.Type? {
+            let name = typeURL.split(separator: "/").last.map(String.init) ?? typeURL
+            return annotations.message(name) == nil ? nil : Anything.self
+        }
+    }
+
+    private static let root = Bundle.module.resourceURL!.appendingPathComponent("testdata/conformance")
+
+    private static let records: [Record] = {
+        let text = try! String(contentsOf: root.appendingPathComponent("reference.jsonl"), encoding: .utf8)
+        return text.split(separator: "\n").map {
+            try! JSONDecoder().decode(Record.self, from: Data($0.utf8))
+        }
+    }()
+
+    private static let ledger: [String: [String: String]] = {
+        let data = try! Data(contentsOf: root.appendingPathComponent("ledger.json"))
+        return try! JSONDecoder().decode([String: [String: String]].self, from: data)
+    }()
+
+    private static var schemas: [String: PXF.Annotations] = [:]
+
+    private static func schema(_ suite: String) throws -> PXF.Annotations {
+        if let s = schemas[suite] { return s }
+        let data = try Data(contentsOf: root.appendingPathComponent("descriptors/\(suite).binpb"))
+        let set = try Google_Protobuf_FileDescriptorSet(serializedBytes: data, extensions: Pxf_Annotations_Extensions)
+        let s = PXF.Annotations(descriptorSet: set)
+        schemas[suite] = s
+        return s
+    }
+
+    private func input(_ r: Record) throws -> Data {
+        try Data(contentsOf: Self.root.appendingPathComponent("corpus/\(r.suite)/\(r.file)"))
+    }
+
+    /// Compares one leg. `disagreement` returns a description, or nil when
+    /// the port matches. `compared` is the positive marker that the leg ran.
+    private func run(leg: String, expectedAtLeast: Int, _ disagreement: (Record) throws -> String?) throws {
+        let ledger = Self.ledger[leg] ?? [:]
+        var compared = 0
+        var actual: [String: String] = [:]
+        for r in Self.records {
+            guard let d = try disagreement(r) else {
+                if r.input == "pxf" || leg != "parse" { compared += 1 }
+                continue
+            }
+            compared += 1
+            actual[r.id] = d
+        }
+        XCTAssertGreaterThanOrEqual(compared, expectedAtLeast, "\(leg): too few documents compared")
+        for (id, d) in actual.sorted(by: { $0.key < $1.key }) where ledger[id] == nil {
+            XCTFail("\(leg): \(id): \(d)")
+        }
+        for id in ledger.keys.sorted() where actual[id] == nil {
+            XCTFail("\(leg): \(id) now matches the reference; remove it from ledger.json (\(ledger[id]!))")
+        }
+        print("conformance \(leg): compared \(compared), ledger \(ledger.count), diverging \(actual.count)")
+        if let dir = ProcessInfo.processInfo.environment["CONFORMANCE_ACTUAL"] {
+            let lines = actual.sorted(by: { $0.key < $1.key }).map { "\($0.key)\t\($0.value)" }.joined(separator: "\n")
+            try Data(lines.utf8).write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(leg).tsv"))
+        }
+    }
+
+    func testCorpusIsPresent() throws {
+        XCTAssertEqual(Self.records.count, 250)
+        for r in Self.records {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: Self.root.appendingPathComponent("corpus/\(r.suite)/\(r.file)").path), r.id)
+        }
+    }
+
+    /// The schema-less parse: the same accept or reject as `pxf.Parse`.
+    func testParseVerdicts() throws {
+        try run(leg: "parse", expectedAtLeast: 180) { r in
+            guard r.input == "pxf" else { return nil }
+            let data = try input(r)
+            do {
+                _ = try PXF.Parser(input: data).parseDocument()
+                return r.parse == "accept" ? nil : "accepted; reference: \(r.parse_error ?? "")"
+            } catch {
+                return r.parse == "reject" ? nil : "rejected: \(error)"
+            }
+        }
+    }
+
+    /// The schema-bound decode: the same accept or reject as the reference's
+    /// `UnmarshalDescriptor`, or `BindRow` for a dataset's rows.
+    func testDecodeVerdicts() throws {
+        try run(leg: "decode", expectedAtLeast: 180) { r in
+            guard r.input == "pxf", !r.decode.isEmpty, let message = r.message else { return nil }
+            let data = try input(r)
+            let annotations = try Self.schema(r.suite)
+            do {
+                let doc = try PXF.Parser(input: data).parseDocument()
+                if doc.datasets.isEmpty {
+                    let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
+                    decoder.typeResolver = Resolver(annotations: annotations)
+                    _ = try decoder.decode(Anything.self, from: data)
+                }
+                return r.decode == "accept" ? nil : "accepted; reference: \(r.decode_error ?? "")"
+            } catch {
+                return r.decode == "reject" ? nil : "rejected: \(error)"
+            }
+        }
+    }
+
+    /// `pxf fmt` without a schema: the same text as `pxf.FormatDocument`.
+    func testFormat() throws {
+        try run(leg: "format", expectedAtLeast: 120) { r in
+            guard r.input == "pxf", let want = r.format else { return nil }
+            guard let doc = try? PXF.Parser(input: try input(r)).parseDocument() else {
+                return "did not parse"
+            }
+            let got = PXF.Format.formatDocument(doc)
+            return got == want ? nil : "formatted differently"
+        }
+    }
+}

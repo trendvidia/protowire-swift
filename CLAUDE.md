@@ -42,6 +42,11 @@ The package keeps `swift-tools-version: 5.10` for broader compatibility;
 `unsafeFlags(["-warnings-as-errors"])` enforces zero warnings (the
 `treatAllWarnings` API requires PackageDescription 6.2+).
 
+`ConformanceTests` compares this port with protowire-go over the spec corpus,
+and needs no Go toolchain. `conformance/README.md` covers the record and the
+ledger. Remove a ledger entry in the commit that fixes it, and refresh the
+record with `conformance/update.sh`.
+
 ## Cross-port wire contracts (don't re-derive)
 
 - `pb`: signed-int fields default to proto3 `int32`/`int64` (plain
