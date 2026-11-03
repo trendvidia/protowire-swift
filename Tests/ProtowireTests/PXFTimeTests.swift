@@ -118,6 +118,22 @@ final class PXFTimeTests: XCTestCase {
         }
     }
 
+    /// The text for fields as they are, which a message need not keep in
+    /// range: nanos carry into the seconds as `time.Unix` carries them, and a
+    /// year outside 0...9999 is spelled as Go spells it.
+    func testTimestampTextMatchesGoForAnyFields() throws {
+        let cases: [(Int64, Int32, String)] = [
+            (0, 0, "1970-01-01T00:00:00Z"), (0, -1, "1969-12-31T23:59:59.999999999Z"),
+            (1, 1_500_000_000, "1970-01-01T00:00:02.5Z"), (1, Int32.max, "1970-01-01T00:00:03.147483647Z"),
+            (-1, Int32.min, "1969-12-31T23:59:56.852516352Z"),
+            (-62_135_596_801, 0, "0000-12-31T23:59:59Z"), (-62_167_219_201, 0, "-0001-12-31T23:59:59Z"),
+            (253_402_300_800, 0, "10000-01-01T00:00:00Z"),
+        ]
+        for (seconds, nanos, want) in cases {
+            XCTAssertEqual(try PXFEncoder().encode(AllTypes(ts_field: Self.timestamp(seconds, nanos))), "ts_field = \(want)\n")
+        }
+    }
+
     /// What `time.Parse(time.RFC3339Nano, …)` refuses, and what is not a
     /// timestamp at all.
     func testTimestampRejects() {
