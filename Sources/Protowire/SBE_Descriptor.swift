@@ -125,7 +125,8 @@ struct DescriptorIndex {
                 throw SBE.DescriptorError.unsupported("repeated scalar field \(qualified) not supported; wrap in a message")
             }
             let (enc, size) = try encodingSize(of: fd, qualified: qualified)
-            fields.append(SBE.FieldTemplate(name: fd.name, offset: offset, size: size, encoding: enc))
+            fields.append(SBE.FieldTemplate(name: fd.name, offset: offset, size: size, encoding: enc,
+                                            isBytes: fd.type == .bytes))
             offset += size
         }
         return (fields, groups, offset)
