@@ -13,6 +13,10 @@ public enum Hardening {
     /// within the limit. Fixed-width targets need no cap: they fail on range.
     public static let maxNumericLiteralDigits: Int = 4096
 
+    /// Largest magnitude of a `pxf.BigFloat`'s binary exponent. Rendering one
+    /// in decimal costs the square of it (draft -01 § Mandatory Limits).
+    public static let maxBigFloatExponent: Int = 16384
+
     /// What `maxNumericLiteralDigits` counts: the digits of a literal's
     /// mantissa, either side of the point, leading zeros excluded. An exponent
     /// and a precision suffix are bounded on their own, so the count stops at
