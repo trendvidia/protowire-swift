@@ -53,9 +53,9 @@ lockstep across language ports when the wire format changes.
   annotations; and a message with a well-known type's full name, such as
   `google.protobuf.Timestamp` or `pxf.Secret`, without the fields a codec reads on
   it. `PXF.AnnotationError` gains `reservedName`, `retiredNumber` and
-  `wellKnownShape`. A file's violations are now ordered by element as the
-  reference sorts them, so the one thrown is the first the reference reports for
-  that file.
+  `wellKnownShape`. Violations are now ordered by file path and then by element,
+  as the reference sorts them, so the one thrown is the first the reference
+  reports.
 - **`@required` and `@default` are read**, from the 1327 annotation carrier, so a
   schema migrated to the annotation form is enforced as the bracket form is. Two
   spellings of one default that differ refuse the schema. An `@default` holding a

@@ -336,19 +336,18 @@ extension PXF {
         }
 
         /// Every violation in the import closure of the file declaring
-        /// `fullName`, the root file's first, in the order `validateSchema`
-        /// meets them.
+        /// `fullName`, ordered by file path and then by element as
+        /// `ValidateFile` sorts them, so the one `validateSchema` throws is the
+        /// first the reference reports.
         func closureViolations(of fullName: String) -> [AnnotationError] {
             guard !violations.isEmpty, let root = messageFiles[fullName] else { return [] }
-            var out: [AnnotationError] = []
             var visited: Set<String> = []
             var pending = [root]
             while let file = pending.popLast() {
                 guard visited.insert(file).inserted else { continue }
-                out += violations[file] ?? []
                 pending += imports[file] ?? []
             }
-            return out
+            return visited.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }.flatMap { violations[$0] ?? [] }
         }
 
         // MARK: - required

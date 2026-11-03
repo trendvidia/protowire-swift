@@ -413,6 +413,18 @@ final class PXFSchemaChecksTests: XCTestCase {
         }
     }
 
+    /// Across the closure the reference sorts by file path first, so an
+    /// imported `a.proto` reports before the root `z.proto`.
+    func testTheClosureIsOrderedByFilePath() {
+        let lib = Self.protoFile("a.proto", package: "a", messages: [Self.message("L", [Self.field("null", 1, .string)])])
+        let root = Self.protoFile("z.proto", package: "z", deps: ["a.proto"],
+                                  messages: [Self.message("R", [Self.field("true", 1, .bool), Self.field("l", 2, .message, typeName: "a.L")])])
+        XCTAssertEqual(violations([root, lib], "z.R").map(\.element), ["a.L.null", "z.R.true"])
+        XCTAssertThrowsError(try check([root, lib], message: "z.R")) { error in
+            XCTAssertEqual((error as? PXF.AnnotationError)?.element, "a.L.null")
+        }
+    }
+
     func testAReservedNameFailsTheDecode() {
         let file = Self.protoFile("bad.proto", package: "bad.v1", messages: [Self.message("M", [Self.field("true", 1, .bool)])])
         let decoder = PXFDecoder(annotations: PXF.Annotations(files: [file]), rootMessage: "bad.v1.M")
