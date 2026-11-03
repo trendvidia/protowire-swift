@@ -174,6 +174,7 @@ extension PXF {
         /// nil: no resolver was given, so an Any's type entry cannot bind.
         var resolve: ((String) -> Bool)?
         var discardUnknown = false
+        var limits = Hardening.Limits()
 
         /// The message an Any's type URL names, after its last "/".
         static func messageName(ofTypeURL url: String) -> String {
@@ -470,7 +471,7 @@ extension PXF {
             }
             let literal = PXF.numericLiteral(value)
             if name == WellKnown.bigFloat, let literal {
-                let parsed = try PXF.parseBigFloat(literal)
+                let parsed = try PXF.parseBigFloat(literal, limits: limits)
                 set("mantissa", .bytes(parsed.mantissa))
                 set("exponent", .int(Int64(parsed.exponent)))
                 set("prec", .uint(UInt64(parsed.prec)))
@@ -479,7 +480,7 @@ extension PXF {
             }
             try rejectPrecision(value, named)
             if name == WellKnown.decimal, let literal {
-                let parsed = try PXF.parseDecimal(literal)
+                let parsed = try PXF.parseDecimal(literal, limits: limits)
                 set("unscaled", .bytes(parsed.unscaled))
                 set("scale", .int(Int64(parsed.scale)))
                 set("negative", .bool(parsed.negative))
@@ -501,7 +502,7 @@ extension PXF {
                 set("nanos", .int(Int64(nanos)))
                 return out
             case let i as IntVal where name == WellKnown.bigInt:
-                let (abs, negative) = try PXF.parseBigInt(i.raw, codingPath: [])
+                let (abs, negative) = try PXF.parseBigInt(i.raw, maxDigits: limits.maxNumericLiteralDigits, codingPath: [])
                 set("abs", .bytes(abs))
                 set("negative", .bool(negative))
                 return out

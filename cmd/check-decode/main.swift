@@ -13,6 +13,10 @@
 //                --schema <fully.qualified.MessageType>
 //                --proto  <path-to-adversarial.proto>
 //                --input  <path>
+//                [--limit NAME=VALUE]...
+//
+//   --limit sets one HARDENING limit for this run, so the corpus can prove a
+//   64 MiB cap with a small fixture.
 //
 //   Exit 0 → input was accepted (decode succeeded)
 //   Exit 1 → input was rejected (decode threw a Swift Error; "reject: ..."
@@ -84,6 +88,14 @@ struct BigIntHolder: Codable {
     }
 }
 
+struct ListHolder: Codable {
+    var values: [Int32]?
+
+    enum CodingKeys: Int, CodingKey {
+        case values = 1
+    }
+}
+
 // The arbitrary-precision carriers, so the digit cap is proved on a field
 // only the cap can reject (protowire#279). Case names are the proto's.
 struct BigNumHolder: Codable {
@@ -101,7 +113,7 @@ struct BigNumHolder: Codable {
 // MARK: - CLI
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pb|sbe|envelope> --schema <name> [--proto <path>] --input <path>\n".utf8))
+    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pb|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
     exit(2)
 }
 
@@ -114,6 +126,27 @@ var format: String?
 var schema: String?
 var protoPath: String?
 var inputPath: String?
+var limits = Hardening.Limits()
+
+/// Applies one `--limit NAME=VALUE`. A bad one is the harness's fault: exit 2.
+func setLimit(_ spec: String?) {
+    let parts = (spec ?? "").split(separator: "=", maxSplits: 1).map(String.init)
+    guard parts.count == 2, let value = Int(parts[1]), value > 0 else {
+        FileHandle.standardError.write(Data("check-decode: --limit wants NAME=VALUE, got \(spec ?? "nothing")\n".utf8))
+        exit(2)
+    }
+    switch parts[0] {
+    case "MaxMessageSize":          limits.maxMessageSize = value
+    case "MaxNestingDepth":         limits.maxNestingDepth = value
+    case "MaxNumericLiteralDigits": limits.maxNumericLiteralDigits = value
+    case "MaxBytesLiteralLength":   limits.maxBytesLiteralLength = value
+    case "MaxRepeatedCount":        limits.maxRepeatedCount = value
+    case "MaxBigFloatExponent":     limits.maxBigFloatExponent = value
+    default:
+        FileHandle.standardError.write(Data("check-decode: unknown limit \(parts[0])\n".utf8))
+        exit(2)
+    }
+}
 
 var args = Array(CommandLine.arguments.dropFirst())
 var i = 0
@@ -125,6 +158,7 @@ while i < args.count {
     case "--schema": schema = val
     case "--proto":  protoPath = val
     case "--input":  inputPath = val
+    case "--limit":  setLimit(val)
     default:
         FileHandle.standardError.write(Data("check-decode: unknown arg \(key)\n".utf8))
         exit(2)
@@ -152,11 +186,13 @@ do {
 
 func pbDecode(_ data: Data, schema: String) throws {
     let dec = PBDecoder()
+    dec.limits = limits
     switch schema {
     case "adversarial.v1.Tree":         _ = try dec.decode(Tree.self, from: data)
     case "adversarial.v1.StringHolder": _ = try dec.decode(StringHolder.self, from: data)
     case "adversarial.v1.BytesHolder":  _ = try dec.decode(BytesHolder.self, from: data)
     case "adversarial.v1.BigIntHolder": _ = try dec.decode(BigIntHolder.self, from: data)
+    case "adversarial.v1.ListHolder":   _ = try dec.decode(ListHolder.self, from: data)
     case "adversarial.v1.BigNumHolder": _ = try dec.decode(BigNumHolder.self, from: data)
     default: throw RuntimeError("unknown schema for pb: \(schema)")
     }
@@ -164,14 +200,30 @@ func pbDecode(_ data: Data, schema: String) throws {
 
 func pxfDecode(_ data: Data, schema: String) throws {
     let dec = PXFDecoder()
+    dec.limits = limits
     switch schema {
     case "adversarial.v1.Tree":         _ = try dec.decode(Tree.self, from: data)
     case "adversarial.v1.StringHolder": _ = try dec.decode(StringHolder.self, from: data)
     case "adversarial.v1.BytesHolder":  _ = try dec.decode(BytesHolder.self, from: data)
     case "adversarial.v1.BigIntHolder": _ = try dec.decode(BigIntHolder.self, from: data)
+    case "adversarial.v1.ListHolder":   _ = try dec.decode(ListHolder.self, from: data)
     case "adversarial.v1.BigNumHolder": _ = try dec.decode(BigNumHolder.self, from: data)
     default: throw RuntimeError("unknown schema for pxf: \(schema)")
     }
+}
+
+/// adversarial.v1.SbeWithGroup, as the comment in adversarial.proto lays it
+/// out. This harness has no proto compiler, so the template is written here.
+func sbeDecode(_ data: Data, schema: String) throws {
+    guard schema == "adversarial.v1.SbeWithGroup" else { throw RuntimeError("unknown schema for sbe: \(schema)") }
+    let template = SBE.MessageTemplate(
+        templateID: 9001, schemaID: 9001, version: 0, blockLength: 4,
+        fields: [SBE.FieldTemplate(name: "root_value", offset: 0, size: 4, encoding: .uint32)],
+        groups: [SBE.GroupTemplate(name: "entries", blockLength: 4,
+                                   fields: [SBE.FieldTemplate(name: "entry_value", offset: 0, size: 4, encoding: .uint32)])])
+    let dec = SBEUnmarshaller()
+    dec.limits = limits
+    _ = try dec.unmarshal(data, template: template)
 }
 
 struct RuntimeError: Error, CustomStringConvertible {
@@ -194,7 +246,7 @@ do {
     case "envelope":
         throw RuntimeError("envelope decode not yet implemented in this reference")
     case "sbe":
-        throw RuntimeError("sbe decode not yet implemented in this reference")
+        try sbeDecode(inputData, schema: schema)
     default:
         throw RuntimeError("unsupported format: \(format)")
     }
