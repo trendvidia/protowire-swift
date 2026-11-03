@@ -226,6 +226,25 @@ final class PBZeroSkippingTests: XCTestCase {
         XCTAssertThrowsError(try PBEncoder().encode(Huge()))
     }
 
+    /// A synthesized string key has no field number, and a value with no tag
+    /// is not protobuf (#51). Every kind of value goes through the same tag.
+    func testStringKeyThrows() {
+        struct Scalar: Encodable { var name = "x" }
+        struct Nested: Encodable { var inner = Scalar() }
+        struct List: Encodable { var tags = ["a"] }
+        struct SetAtZero: Encodable { var n: Int32? = 0 }
+        for value in [Scalar(), Nested(), List(), SetAtZero()] as [Encodable] {
+            XCTAssertThrowsError(try PBEncoder().encode(value), "\(value)") { error in
+                guard case EncodingError.invalidValue(_, let context) = error else {
+                    return XCTFail("\(value): \(error)")
+                }
+                XCTAssertTrue(context.debugDescription.contains("has no field number"), context.debugDescription)
+            }
+        }
+        // A zero value writes nothing, so it has no tag to need.
+        XCTAssertEqual(try PBEncoder().encode(Scalar(name: "")), Data())
+    }
+
     func testNarrowUnsignedListRoundTrips() throws {
         struct U: Codable, Equatable {
             var u: [UInt32] = []

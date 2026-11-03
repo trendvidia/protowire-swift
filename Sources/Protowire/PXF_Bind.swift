@@ -44,6 +44,16 @@ extension PXF {
 
         func has(_ name: String) -> Bool { values.contains { $0.field.name == name } }
 
+        /// For a bound Any, the `value` bytes it packs; nil for any other
+        /// message, and for an Any whose body's type the set does not declare.
+        var anyValue: Data? {
+            guard name == WellKnown.any else { return nil }
+            for (field, value) in values where field.name == "value" {
+                if case .bytes(let data) = value { return data }
+            }
+            return nil
+        }
+
         /// Fields outside a real oneof first, then by number: the order of
         /// protobuf-go's deterministic marshal.
         func serialized() -> Data {
@@ -266,7 +276,7 @@ extension PXF {
                             let index = lists[field.name]?.count ?? 0
                             let result = try singular(element, field, depth: depth + 1, path: "\(path)\(field.name)[\(index)].")
                             lists[field.name, default: []].append(result.value)
-                            rewrittenList.elements[i] = Self.withEntries(element, result.entries)
+                            rewrittenList.elements[i] = Self.withEntries(element, result)
                         }
                         var rewritten = a
                         rewritten.value = rewrittenList
@@ -275,11 +285,9 @@ extension PXF {
                     } else {
                         let result = try singular(a.value, field, depth: depth, path: path + field.name + ".")
                         out.set(field, result.value)
-                        if let inner = result.entries, let v = a.value as? BlockVal {
+                        if result.entries != nil, a.value is BlockVal {
                             var rewritten = a
-                            var block = v
-                            block.entries = inner
-                            rewritten.value = block
+                            rewritten.value = Self.withEntries(a.value, result)
                             normalized[normalized.count - 1] = rewritten
                         }
                     }
@@ -303,6 +311,7 @@ extension PXF {
                     out.set(field, .message(result.message))
                     var rewritten = b
                     rewritten.entries = result.entries
+                    if b.typeURL != nil { rewritten.anyValue = result.message.anyValue }
                     normalized.append(rewritten)
 
                 case is MapEntry:
@@ -363,16 +372,18 @@ extension PXF {
                 let result = try singular(m.value, valueField, named: field, depth: depth, path: "\(path)[\"\(m.key)\"].")
                 entries.append((key, result.value))
                 var entryOut = m
-                entryOut.value = Self.withEntries(m.value, result.entries)
+                entryOut.value = Self.withEntries(m.value, result)
                 rewritten.entries[i] = entryOut
             }
             return rewritten
         }
 
-        /// `value` with a block's entries replaced by their normal form.
-        private static func withEntries(_ value: Value, _ entries: [Entry]?) -> Value {
-            guard var block = value as? BlockVal, let entries else { return value }
+        /// `value` with a block's entries replaced by their normal form, and
+        /// an Any body carrying the bytes it packed to.
+        private static func withEntries(_ value: Value, _ bound: (value: BoundMessage.Value, entries: [Entry]?)) -> Value {
+            guard var block = value as? BlockVal, let entries = bound.entries else { return value }
             block.entries = entries
+            if block.typeURL != nil, case .message(let m) = bound.value { block.anyValue = m.anyValue }
             return block
         }
 
@@ -435,7 +446,10 @@ extension PXF {
 
         private func blockValue(_ block: BlockVal, _ field: Annotations.Field, depth: Int, path: String) throws -> (message: BoundMessage, entries: [Entry]) {
             guard let name = field.typeName else { return (BoundMessage(name: ""), block.entries) }
-            guard let message = annotations.message(name) else {
+            // Any's shape is fixed, so a set that leaves out any.proto still
+            // binds the body, as the reference does: it always knows Any.
+            let known = annotations.message(name) ?? (name == WellKnown.any ? WellKnown.anyMessage : nil)
+            guard let message = known else {
                 return (BoundMessage(name: name), block.entries)
             }
             guard let url = block.typeURL else {
@@ -713,6 +727,14 @@ extension PXF {
     /// Names and literal forms of the types PXF writes specially.
     enum WellKnown {
         static let any = "google.protobuf.Any"
+        /// `google.protobuf.Any` as any.proto declares it, for a descriptor
+        /// set that does not include that file.
+        static let anyMessage = Annotations.Message(fullName: any, fields: [
+            Annotations.Field(name: "type_url", number: 1, type: .string, typeName: nil, isRepeated: false, isMap: false,
+                              required: false, defaultLiteral: nil, keyName: nil, mapValueMessage: nil, oneof: nil),
+            Annotations.Field(name: "value", number: 2, type: .bytes, typeName: nil, isRepeated: false, isMap: false,
+                              required: false, defaultLiteral: nil, keyName: nil, mapValueMessage: nil, oneof: nil),
+        ])
         static let timestamp = "google.protobuf.Timestamp"
         static let duration = "google.protobuf.Duration"
         static let bigInt = "pxf.BigInt"
