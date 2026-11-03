@@ -152,8 +152,11 @@ final class PXFKeyedEntryNamePresenceTests: XCTestCase {
         ]
         let dec = PXFDecoder(annotations: PXF.Annotations(files: [base, file]), rootMessage: "keyedname.v1.Holder")
         dec.typeResolver = Resolver()
-        let (_, result) = try dec.unmarshalFull(Holder.self, from: #"payload = { @type = "keyedname.v1.Nests" inner { alpha {} } }"#)
+        let (holder, result) = try dec.unmarshalFull(Holder.self, from: #"payload = { @type = "keyedname.v1.Nests" inner { alpha {} } }"#)
         XCTAssertTrue(result.isSet("payload.inner[0].name"), "present: \(result.allSetFields)")
+        // What protowire-go 9fe20a1 packs: inner[0].name = "alpha", the
+        // entry name and not the default (#51).
+        XCTAssertEqual(holder.payload?.value, Data([0x12, 0x07, 0x0a, 0x05] + Array("alpha".utf8)))
     }
 
     /// One root cause with the keyed case: a mark made inside a message body

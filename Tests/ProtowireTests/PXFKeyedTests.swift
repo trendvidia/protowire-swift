@@ -480,7 +480,11 @@ final class PXFKeyedTests: XCTestCase {
         dec.typeResolver = Resolver()
         // A quoted name is a key here, because the body's type is keyed. The
         // same body is an error when the block names no type this set knows.
-        XCTAssertNoThrow(try dec.decode(Holder.self, from: #"payload = { @type = "p.N" children { "a-b" { } } }"#))
+        let holder = try dec.decode(Holder.self, from: #"payload = { @type = "p.N" children { "a-b" { } } }"#)
+        // The body packs from the descriptor, keyed form expanded, to what
+        // protowire-go 9fe20a1 writes: children[0].id = "a-b" (#51).
+        XCTAssertEqual(holder.payload?.typeURL, "p.N")
+        XCTAssertEqual(holder.payload?.value, Data([0x12, 0x05, 0x0a, 0x03, 0x61, 0x2d, 0x62]))
         XCTAssertThrowsError(try dec.decode(Holder.self, from: #"payload = { @type = "p.Other" children { "a-b" { } } }"#))
     }
 }

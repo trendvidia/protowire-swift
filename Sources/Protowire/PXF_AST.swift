@@ -226,6 +226,9 @@ extension PXF {
         /// Comments written around the type entry, for the formatter.
         public var typeEntryLeadingComments: [Comment] = []
         public var typeEntryTrailingComment: String?
+        /// For a body with a `typeURL`, the Any `value` bytes the schema-bound
+        /// pass packed from the descriptor; see `BlockVal.anyValue`.
+        var anyValue: Data?
 
         public static func == (lhs: Block, rhs: Block) -> Bool {
             guard lhs.pos.line == rhs.pos.line && lhs.pos.column == rhs.pos.column &&
@@ -328,6 +331,10 @@ extension PXF {
         /// Comments written around the type entry, for the formatter.
         public var typeEntryLeadingComments: [Comment] = []
         public var typeEntryTrailingComment: String?
+        /// For a body with a `typeURL`, the Any `value` bytes the schema-bound
+        /// pass packed from the descriptor. The Codable decoder puts these in
+        /// the `Google_Protobuf_Any`: the Swift type has no field numbers.
+        var anyValue: Data?
 
         public func isEqual(to other: Value) -> Bool {
             guard let other = other as? BlockVal, self.typeURL == other.typeURL && self.entries.count == other.entries.count else { return false }
