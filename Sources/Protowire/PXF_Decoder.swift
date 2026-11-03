@@ -53,6 +53,14 @@ public final class PXFDecoder {
     var lastBound: PXF.BoundMessage?
     var lastBoundRows: [PXF.BoundMessage] = []
 
+    /// The protobuf bytes of what the last document bound to, in the
+    /// reference's deterministic order (map entries by key). Nil when no
+    /// schema was set or nothing has been decoded. It is for check-decode's
+    /// `pxf-pb` mode, the cross-port write gate, and is SPI rather than API:
+    /// the bound message stays internal (design call 8), and a caller wanting
+    /// bytes from PXF decodes into its own type and uses `PBEncoder`.
+    @_spi(Conformance) public var lastBoundBytes: Data? { lastBound?.serialized() }
+
     /// The limits for each decode call; the `Hardening` constants by default.
     public var limits = Hardening.Limits()
 
