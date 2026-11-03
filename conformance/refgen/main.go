@@ -13,6 +13,7 @@
 //	descriptors/<suite>.binpb   a FileDescriptorSet with imports
 //	reference.jsonl             one Record per document, sorted
 //	provenance.json             the spec and reference revisions
+//	values.tsv                  the struct-binding table, copied
 //
 // Only protowire-go decides a verdict here. A fixture's leading comment is
 // the spec's statement of what should happen, and the spec repo's own tests
@@ -428,6 +429,16 @@ func main() {
 		if strings.HasPrefix(r.Suite, "annotations") && r.File == "missing-required.pxf" && r.Decode != "reject" {
 			log.Fatal("the reference accepted missing-required.pxf: (pxf.required) was not applied")
 		}
+	}
+
+	// The struct-binding table (protowire#509) holds protowire-go's bytes
+	// already, so it is copied as it is, for PBTableTests to read.
+	values, err := os.ReadFile(filepath.Join(testdata, "values", "values.tsv"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(*out, "values.tsv"), values, 0o644); err != nil {
+		log.Fatal(err)
 	}
 
 	sort.Slice(records, func(i, j int) bool {
