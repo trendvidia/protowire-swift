@@ -67,5 +67,5 @@ let package = Package(
     // require auditing every public struct (Position, Token, AST
     // nodes, etc.) for Sendable conformance — scope creep for v0.70.0.
     // Tracked for a follow-up.
-    swiftLanguageVersions: [.v5]
+    swiftLanguageModes: [.v5]
 )
