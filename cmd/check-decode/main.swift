@@ -113,7 +113,7 @@ struct BigNumHolder: Codable {
 // MARK: - CLI
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pb|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
+    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pb|pb-render|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
     exit(2)
 }
 
@@ -212,6 +212,26 @@ func pxfDecode(_ data: Data, schema: String) throws {
     }
 }
 
+/// Reads the PB bytes, then writes them as PXF: the producer's side of the
+/// bounds. The decoder stores a big number's fields and checks nothing, so
+/// writing them is what is tested. A deep Tree is the producer's depth check
+/// (HARDENING.md § Recursion): the reader here allows twice the run's
+/// MaxNestingDepth, so a message one past the limit reaches the producer and
+/// the reject comes from it, not from the read. The producer keeps the run's
+/// limit.
+func pbRender(_ data: Data, schema: String) throws {
+    let dec = PBDecoder()
+    dec.limits = limits
+    dec.limits.maxNestingDepth = 2 * limits.maxNestingDepth
+    let enc = PXFEncoder()
+    enc.limits = limits
+    switch schema {
+    case "adversarial.v1.Tree":         _ = try enc.encode(dec.decode(Tree.self, from: data))
+    case "adversarial.v1.BigNumHolder": _ = try enc.encode(dec.decode(BigNumHolder.self, from: data))
+    default: throw RuntimeError("unknown schema for pb-render: \(schema)")
+    }
+}
+
 /// The SBE messages of adversarial.proto, laid out as its comments say. This
 /// harness has no proto compiler, so the templates are written here.
 func sbeDecode(_ data: Data, schema: String) throws {
@@ -250,10 +270,7 @@ do {
     case "pb":
         try pbDecode(inputData, schema: schema)
     case "pb-render":
-        // The producer's side of the bounds: the decoder stores a big number's
-        // fields and checks nothing, so writing them is what is tested.
-        guard schema == "adversarial.v1.BigNumHolder" else { throw RuntimeError("unknown schema for pb-render: \(schema)") }
-        _ = try PXFEncoder().encode(PBDecoder().decode(BigNumHolder.self, from: inputData))
+        try pbRender(inputData, schema: schema)
     case "envelope":
         throw RuntimeError("envelope decode not yet implemented in this reference")
     case "sbe":
