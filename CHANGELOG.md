@@ -33,6 +33,15 @@ lockstep across language ports when the wire format changes.
   and a timestamp has no trailing zeros. With a schema, an enum's name is written bare.
 - `Protowire.consumeFixed32`, `consumeFixed64` and `SBE.readHeader` read a `Data`
   slice at any offset. They trapped on a misaligned one.
+- **An Any is written as `@type` and a body only when the body reads back as the
+  same bytes** ([#63](https://github.com/trendvidia/protowire-swift/issues/63),
+  protowire#501). The schema-bound marshaller that `ConformanceTests` compares
+  wrote a body for any value that parsed, which changed a value holding unknown
+  fields, fields or map entries out of order, explicit zeros, a Timestamp past
+  year 9999, or an unset `(pxf.default)` or `(pxf.required)` field. It also
+  wrote unreadable text for a chain of Anys deeper than `maxNestingDepth`. Those
+  now stay as `type_url` and `value`. `PXFEncoder` on a Swift type writes every
+  Any that way, which conforms; this is now documented.
 
 ### Changed
 
