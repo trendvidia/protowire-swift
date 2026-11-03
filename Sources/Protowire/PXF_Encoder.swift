@@ -135,8 +135,10 @@ public final class PXFEncoder {
     }
 
     /// The node `value` writes as, for a caller that renders it itself.
-    static func node<T: Encodable>(_ value: T) throws -> PXFNode {
-        try _PXFEncoder.node(for: value, codingPath: [])
+    /// `level` is the depth the value sits at, so the producer's depth check
+    /// counts from there.
+    static func node<T: Encodable>(_ value: T, level: Int, maxDepth: Int) throws -> PXFNode {
+        try _PXFEncoder.node(for: value, codingPath: [], level: level, maxDepth: maxDepth)
     }
 }
 
