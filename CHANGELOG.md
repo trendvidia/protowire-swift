@@ -45,6 +45,17 @@ lockstep across language ports when the wire format changes.
   reports the same without a document. `PXF.AnnotationError` gains three cases, so
   an exhaustive `switch` over it needs them. `validateRequiredDefault` and
   `validateKeyPlacement` still report their one rule each.
+- **The rest of the reference's bind-time checks refuse a schema too**
+  ([#55](https://github.com/trendvidia/protowire-swift/issues/55)), over the same
+  closure: a message field, oneof or enum value named `null`, `true` or `false`; an
+  option at an extension number retired by the move to the registered block (a
+  descriptor compiled before protowire v1.12.0), in a file that imports protowire's
+  annotations; and a message with a well-known type's full name, such as
+  `google.protobuf.Timestamp` or `pxf.Secret`, without the fields a codec reads on
+  it. `PXF.AnnotationError` gains `reservedName`, `retiredNumber` and
+  `wellKnownShape`. A file's violations are now ordered by element as the
+  reference sorts them, so the one thrown is the first the reference reports for
+  that file.
 - **`@required` and `@default` are read**, from the 1327 annotation carrier, so a
   schema migrated to the annotation form is enforced as the bracket form is. Two
   spellings of one default that differ refuse the schema. An `@default` holding a

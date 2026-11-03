@@ -26,6 +26,8 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_Result.swift` — per-field presence (set / null / absent).
 - `PXF_Annotations.swift`, `PXF_Carrier.swift` — the descriptor index, and both
   spellings of an annotation: bracket options and the 1327 carrier.
+- `PXF_SchemaChecks.swift` — the bind-time checks on declarations: reserved
+  names, retired option numbers, well-known shapes.
 - `PXF_Bind.swift` — the schema-bound pass (design call 8).
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
   — SBE primitives + dictionary codec + zero-copy reader.
@@ -132,10 +134,6 @@ record with `conformance/update.sh`.
 
 ## Open gaps (not yet implemented)
 
-- **The remaining bind-time checks.** `validateSchema` covers `(pxf.key)`,
-  default placement, the oneof rules, required with default and duplicate
-  names. Reserved names, retired option numbers and well-known shapes are
-  tracked in #55.
 - **Message-typed SBE codec.** `SBE.templates(from:)` builds a
   `MessageTemplate` from a descriptor set, but the codec reads and writes
   dictionaries, not message types. The cross-port `bench-sbe` harness isn't

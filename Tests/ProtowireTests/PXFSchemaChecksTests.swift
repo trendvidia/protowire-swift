@@ -300,6 +300,355 @@ final class PXFSchemaChecksTests: XCTestCase {
         try check([file])
     }
 
+    // MARK: declarations (#55), ported from protowire-go's schema_test.go,
+    // retired_test.go and wkt_shape_test.go
+
+    private struct Anything: Decodable { init(from decoder: Decoder) throws {} }
+
+    private static func message(_ name: String, _ fields: [Google_Protobuf_FieldDescriptorProto] = [],
+                                oneofs: [String] = []) -> Google_Protobuf_DescriptorProto {
+        var m = plain(name)
+        m.field = fields
+        m.oneofDecl = oneofs.map { n in
+            var o = Google_Protobuf_OneofDescriptorProto()
+            o.name = n
+            return o
+        }
+        return m
+    }
+
+    private static func enumType(_ name: String, _ values: [String]) -> Google_Protobuf_EnumDescriptorProto {
+        var e = Google_Protobuf_EnumDescriptorProto()
+        e.name = name
+        e.value = values.enumerated().map { i, n in
+            var v = Google_Protobuf_EnumValueDescriptorProto()
+            v.name = n
+            v.number = Int32(i)
+            return v
+        }
+        return e
+    }
+
+    private static func protoFile(_ name: String, package: String, deps: [String] = [],
+                                  messages: [Google_Protobuf_DescriptorProto] = [],
+                                  enums: [Google_Protobuf_EnumDescriptorProto] = []) -> Google_Protobuf_FileDescriptorProto {
+        var f = Google_Protobuf_FileDescriptorProto()
+        f.name = name
+        f.package = package
+        f.syntax = "proto3"
+        f.dependency = deps
+        f.messageType = messages
+        f.enumType = enums
+        return f
+    }
+
+    private func violations(_ files: [Google_Protobuf_FileDescriptorProto], _ message: String) -> [PXF.AnnotationError] {
+        PXF.Annotations(files: files).closureViolations(of: message)
+    }
+
+    // MARK: reserved names (draft §3.13)
+
+    func testAReservedEnumValueIsRefused() {
+        let file = Self.protoFile("trades.proto", package: "trades.v1",
+            messages: [Self.message("Order", [Self.field("side", 1, .enum, typeName: "trades.v1.Side")])],
+            enums: [Self.enumType("Side", ["SIDE_UNSPECIFIED", "BUY", "SELL", "null"])])
+        XCTAssertEqual(violations([file], "trades.v1.Order"),
+                       [.reservedName(file: "trades.proto", kind: "enum value", element: "trades.v1.null", name: "null")])
+        XCTAssertEqual(violations([file], "trades.v1.Order").first.map { "\($0)" },
+                       "trades.proto: enum value \"trades.v1.null\" uses PXF-reserved name \"null\" (draft §3.13)")
+    }
+
+    func testAReservedFieldNameIsRefused() {
+        let file = Self.protoFile("flag.proto", package: "flag.v1",
+            messages: [Self.message("Flag", [Self.field("enabled", 1, .bool), Self.field("true", 2, .bool)])])
+        XCTAssertEqual(violations([file], "flag.v1.Flag"),
+                       [.reservedName(file: "flag.proto", kind: "message field", element: "flag.v1.Flag.true", name: "true")])
+    }
+
+    func testAReservedOneofNameIsRefused() {
+        let file = Self.protoFile("choice.proto", package: "choice.v1",
+            messages: [Self.message("Choice", [Self.field("text", 1, .string, oneof: 0), Self.field("number", 2, .int32, oneof: 0)],
+                                    oneofs: ["false"])])
+        XCTAssertEqual(violations([file], "choice.v1.Choice"),
+                       [.reservedName(file: "choice.proto", kind: "oneof", element: "choice.v1.Choice.false", name: "false")])
+    }
+
+    func testReservedNamesAreCaseSensitive() throws {
+        let file = Self.protoFile("box.proto", package: "box.v1",
+            messages: [Self.message("Box", [Self.field("NULL", 1, .string), Self.field("True", 2, .bool)])],
+            enums: [Self.enumType("Truth", ["TRUTH_UNSPECIFIED", "NULL", "TRUE", "FALSE"])])
+        try check([file], message: "box.v1.Box")
+    }
+
+    func testAReservedNameInANestedMessageIsRefused() {
+        var outer = Self.message("Outer")
+        outer.nestedType = [Self.message("Inner", [Self.field("false", 1, .bool)])]
+        let file = Self.protoFile("nested.proto", package: "nest.v1", messages: [outer])
+        XCTAssertEqual(violations([file], "nest.v1.Outer").map(\.element), ["nest.v1.Outer.Inner.false"])
+    }
+
+    func testACleanFileBinds() throws {
+        let file = Self.protoFile("clean.proto", package: "clean.v1",
+            messages: [Self.message("M", [Self.field("x", 1, .int32)])], enums: [Self.enumType("E", ["E_UNSPECIFIED", "ALPHA"])])
+        try check([file], message: "clean.v1.M")
+    }
+
+    func testAProto3OptionalNamedNullIsReportedOnce() {
+        // Its synthetic oneof `_null` is not a oneof to the rule.
+        var f = Self.field("null", 1, .bool, oneof: 0)
+        f.proto3Optional = true
+        let file = Self.protoFile("opt.proto", package: "opt.v1", messages: [Self.message("M", [f], oneofs: ["_null"])])
+        XCTAssertEqual(violations([file], "opt.v1.M"),
+                       [.reservedName(file: "opt.proto", kind: "message field", element: "opt.v1.M.null", name: "null")])
+    }
+
+    func testViolationsAreOrderedByElementAndTheFirstIsThrown() {
+        let file = Self.protoFile("multi.proto", package: "m.v1",
+            messages: [Self.message("Z", [Self.field("true", 1, .bool), Self.field("s", 2, .string, oneof: 0)], oneofs: ["false"])],
+            enums: [Self.enumType("E", ["E_UNSPECIFIED", "null"])])
+        XCTAssertEqual(violations([file], "m.v1.Z").map(\.element), ["m.v1.Z.false", "m.v1.Z.true", "m.v1.null"])
+        XCTAssertThrowsError(try check([file], message: "m.v1.Z")) { error in
+            XCTAssertEqual(error as? PXF.AnnotationError,
+                           .reservedName(file: "multi.proto", kind: "oneof", element: "m.v1.Z.false", name: "false"))
+        }
+    }
+
+    func testAReservedNameFailsTheDecode() {
+        let file = Self.protoFile("bad.proto", package: "bad.v1", messages: [Self.message("M", [Self.field("true", 1, .bool)])])
+        let decoder = PXFDecoder(annotations: PXF.Annotations(files: [file]), rootMessage: "bad.v1.M")
+        XCTAssertThrowsError(try decoder.decode(Anything.self, from: "true = true")) { error in
+            XCTAssertTrue("\(error)".contains("bad.v1.M.true"), "\(error)")
+        }
+    }
+
+    // MARK: retired option numbers (STABILITY.md promise 3)
+
+    private struct StaleOptions {
+        var file: Data?, msg: Data?, field: Data?, oneof: Data?, enumType: Data?, enumValue: Data?
+    }
+
+    private static func varintOpt(_ number: Int32, _ value: UInt64) -> Data {
+        var out = Data()
+        Protowire.appendTag(&out, number: number, type: .varint)
+        Protowire.appendVarint(&out, value)
+        return out
+    }
+
+    private static func options<T: SwiftProtobuf.Message>(_ bytes: Data) -> T {
+        // Nothing declares these numbers, so all of them parse to unknown fields.
+        (try? T(serializedBytes: bytes)) ?? T()
+    }
+
+    /// protowire-go's `staleFile`: one message with a field in a oneof, one
+    /// enum, and the given unknown bytes on each element's options.
+    private static func staleFile(_ deps: [String], _ o: StaleOptions) -> Google_Protobuf_FileDescriptorProto {
+        var m = message("M", [field("x", 1, .string, oneof: 0)], oneofs: ["o"])
+        var e = enumType("E", ["E_ZERO"])
+        var file = protoFile("stale.proto", package: "stale.v1", deps: deps)
+        if let b = o.file { file.options = options(b) }
+        if let b = o.msg { m.options = options(b) }
+        if let b = o.field { m.field[0].options = options(b) }
+        if let b = o.oneof { m.oneofDecl[0].options = options(b) }
+        if let b = o.enumType { e.options = options(b) }
+        if let b = o.enumValue { e.value[0].options = options(b) }
+        file.messageType = [m]
+        file.enumType = [e]
+        return file
+    }
+
+    private static func retired(_ vs: [PXF.AnnotationError]) -> [PXF.AnnotationError] {
+        vs.filter { if case .retiredNumber = $0 { return true } else { return false } }
+    }
+
+    func testRetiredNumbersAreDiagnosed() {
+        let carrier = Self.bytesField(50400, Data())
+        let file = Self.staleFile(["pxf/annotations.proto"], StaleOptions(
+            file: Self.varintOpt(50100, 9001) + Self.varintOpt(50101, 0) + Self.bytesField(50404, Data()),
+            msg: Self.varintOpt(50200, 7) + carrier,
+            field: Self.varintOpt(50000, 1) + Self.bytesField(50001, Data("42".utf8)) + carrier + Self.varintOpt(51000, 1),
+            oneof: carrier, enumType: carrier, enumValue: carrier))
+        let vs = violations([file], "stale.v1.M")
+        var byNumber: [String: PXF.AnnotationError] = [:]
+        for v in vs {
+            guard case .retiredNumber(_, let element, let number, _) = v else { return XCTFail("\(v)") }
+            byNumber["\(element)#\(number)"] = v
+        }
+        let want = [
+            "stale.proto#50100": "(sbe.schema_id) before protowire v1.12.0 and is 1319 now",
+            "stale.proto#50101": "(sbe.version) before protowire v1.12.0 and is 1320 now",
+            "stale.proto#50404": "source_map carrier before protowire v1.12.0 and is 1331 now",
+            "stale.v1.M#50200": "(sbe.template_id) before protowire v1.12.0 and is 1321 now",
+            "stale.v1.M#50400": "message_annotations carrier before protowire v1.12.0 and is 1327 now",
+            "stale.v1.M.x#50000": "(pxf.required) before protowire v1.12.0 and is 1314 now",
+            "stale.v1.M.x#50001": "(pxf.default) before protowire v1.12.0 and is 1315 now",
+            "stale.v1.M.x#50400": "field_annotations carrier before protowire v1.12.0 and is 1327 now",
+            "stale.v1.M.x#51000": "protocheck field constraint before protowire v1.12.0 and is 1347 now",
+            "stale.v1.M.o#50400": "oneof_annotations carrier",
+            "stale.v1.E#50400": "*_annotations carrier",
+            "stale.v1.E_ZERO#50400": "*_annotations carrier",
+        ]
+        for (key, detail) in want {
+            guard let v = byNumber[key] else {
+                XCTFail("expected a violation for \(key); got \(byNumber.keys.sorted())")
+                continue
+            }
+            XCTAssertTrue("\(v)".contains(detail), "\(v)")
+            XCTAssertTrue("\(v)".contains("must be recompiled"), "\(v)")
+            XCTAssertTrue("\(v)".hasSuffix("(STABILITY.md promise 3)"), "\(v)")
+        }
+        XCTAssertEqual(vs.count, want.count, "one violation per retired number, no more: \(vs)")
+
+        // The violation is a bind failure: the alternative was a schema that
+        // silently stopped enforcing (pxf.required).
+        let only = Self.staleFile(["pxf/annotations.proto"], StaleOptions(field: Self.varintOpt(50000, 1)))
+        let decoder = PXFDecoder(annotations: PXF.Annotations(files: [only]), rootMessage: "stale.v1.M")
+        XCTAssertThrowsError(try decoder.decode(Anything.self, from: "x = \"v\"")) { error in
+            XCTAssertTrue("\(error)".contains("50000"), "\(error)")
+        }
+    }
+
+    /// The gate: the same bytes in a file that imports none of protowire's
+    /// annotation files are a third party's options in the range everybody
+    /// squats. Likewise numbers that were never allocated, and a clean file.
+    func testRetiredNumbersNeedAProtowireImport() {
+        let stale = StaleOptions(file: Self.varintOpt(50100, 9001), msg: Self.bytesField(50400, Data()), field: Self.varintOpt(50000, 1))
+        let cases: [(String, [String], StaleOptions)] = [
+            ("no protowire import", ["google/protobuf/timestamp.proto"], stale),
+            ("no import at all", [], stale),
+            ("unallocated numbers", ["pxf/annotations.proto"], StaleOptions(file: Self.varintOpt(50999, 1), field: Self.varintOpt(50050, 1))),
+            ("registered numbers as unknown bytes", ["pxf/annotations.proto"], StaleOptions(field: Self.varintOpt(1314, 1))),
+            ("clean", ["pxf/annotations.proto"], StaleOptions()),
+        ]
+        for (name, deps, opts) in cases {
+            XCTAssertEqual(Self.retired(violations([Self.staleFile(deps, opts)], "stale.v1.M")), [], name)
+        }
+    }
+
+    func testRetiredNumbersInAnImportAreDiagnosed() {
+        let stale = Self.staleFile(["pxf/annotations.proto"], StaleOptions(field: Self.varintOpt(50000, 1)))
+        let uses = Self.protoFile("uses.proto", package: "uses.v1", deps: ["stale.proto"],
+                                  messages: [Self.message("U", [Self.field("m", 1, .message, typeName: "stale.v1.M")])])
+        let vs = violations([stale, uses], "uses.v1.U")
+        XCTAssertEqual(vs.count, 1, "\(vs)")
+        guard case .retiredNumber(let file, _, let number, _)? = vs.first else { return XCTFail("\(vs)") }
+        XCTAssertEqual(file, "stale.proto")
+        XCTAssertEqual(number, 50000)
+    }
+
+    /// The option bytes are read as protobuf-go's `ConsumeFieldValue` reads
+    /// them: a group is skipped whole, and a malformed field ends the scan
+    /// with what came before it kept.
+    func testOptionBytesAreScannedAsTheReferenceDoes() {
+        var group = Data()
+        Protowire.appendTag(&group, number: 7, type: .startGroup)
+        group += Self.varintOpt(50001, 5)
+        Protowire.appendTag(&group, number: 7, type: .endGroup)
+        XCTAssertEqual(PXF.Annotations.optionNumbers(group + Self.varintOpt(50000, 1)), [7, 50000])
+        // An end group that doesn't close the open one is malformed.
+        var crossed = Data()
+        Protowire.appendTag(&crossed, number: 7, type: .startGroup)
+        Protowire.appendTag(&crossed, number: 8, type: .endGroup)
+        XCTAssertEqual(PXF.Annotations.optionNumbers(Self.varintOpt(50000, 1) + crossed + Self.varintOpt(50001, 1)), [50000])
+        // Field number 0 is no field.
+        XCTAssertEqual(PXF.Annotations.optionNumbers(Data([0x00, 0x01]) + Self.varintOpt(50000, 1)), [])
+        // A length past the end is truncated.
+        XCTAssertEqual(PXF.Annotations.optionNumbers(Self.varintOpt(50000, 1) + Data([0x8A, 0x9A, 0x0C, 0x05])), [50000])
+    }
+
+    // MARK: well-known shapes (draft -01 §wkt-shapes)
+
+    /// One field of a redefinition's body: `type name = number`.
+    private typealias BodyField = (name: String, type: FieldType, repeated: Bool, optional: Bool)
+
+    private static func body(_ fields: (String, FieldType)...) -> [BodyField] {
+        fields.map { ($0.0, $0.1, false, false) }
+    }
+
+    /// protowire-go's `compileRedefinition`: `message <name> { body }` and a
+    /// holder using it singly, in a list and as a map value.
+    private static func redefinition(_ pkg: String, _ name: String, _ body: [BodyField]) -> Google_Protobuf_FileDescriptorProto {
+        var oneofs: [String] = []
+        let fields = body.enumerated().map { i, b -> Google_Protobuf_FieldDescriptorProto in
+            var f = field(b.name, Int32(i + 1), b.type, repeated: b.repeated, oneof: b.optional ? Int32(oneofs.count) : nil)
+            if b.optional {
+                f.proto3Optional = true
+                oneofs.append("_" + b.name)
+            }
+            return f
+        }
+        let full = pkg + "." + name
+        var entry = message("MEntry", [field("key", 1, .string), field("value", 2, .message, typeName: full)])
+        entry.options.mapEntry = true
+        var holder = message("H", [field("pw", 1, .message, typeName: full), field("l", 2, .message, typeName: full, repeated: true),
+                                   field("m", 3, .message, typeName: pkg + ".H.MEntry", repeated: true)])
+        holder.nestedType = [entry]
+        return protoFile("p.proto", package: pkg, messages: [message(name, fields, oneofs: oneofs), holder])
+    }
+
+    func testAWellKnownNameWithTheWrongShapeIsRefused() {
+        let cases: [(String, String, [BodyField], String, String)] = [
+            ("pxf", "Secret", Self.body(("other", .string)), "pw = \"x\"", "no field \"value\""),
+            ("pxf", "Secret", Self.body(("value", .int32)), "pw = \"x\"", "field \"value\" is int32"),
+            ("pxf", "Secret", [("value", .string, true, false)], "pw = \"x\"", "field \"value\" has the wrong cardinality"),
+            ("pxf", "Secret", Self.body(("value", .string), ("hint", .int32)), "pw = \"x\"", "field \"hint\" is int32"),
+            ("pxf", "BigInt", Self.body(("other", .string)), "pw = 5", "no field \"abs\""),
+            ("pxf", "BigInt", Self.body(("abs", .int32), ("negative", .bool)), "pw = 5", "field \"abs\" is int32"),
+            ("pxf", "Decimal", Self.body(("other", .string)), "pw = 1.5", "no field \"unscaled\""),
+            ("pxf", "BigFloat", Self.body(("other", .string)), "pw = 1.5", "no field \"mantissa\""),
+            ("google.protobuf", "Timestamp", Self.body(("other", .string)), "pw = 2026-01-01T00:00:00Z", "no field \"seconds\""),
+            ("google.protobuf", "Duration", Self.body(("other", .string)), "pw = 5s", "no field \"seconds\""),
+            ("google.protobuf", "StringValue", Self.body(("other", .string)), "pw = \"x\"", "no field \"value\""),
+            ("google.protobuf", "StringValue", Self.body(("value", .int32)), "pw = \"x\"", "field \"value\" is int32"),
+            ("google.protobuf", "Int32Value", Self.body(("value", .string)), "pw = 5", "field \"value\" is string"),
+            ("google.protobuf", "Any", Self.body(("other", .string)), "pw { @type = \"x\" }", "no field \"type_url\""),
+        ]
+        for (pkg, name, body, doc, detail) in cases {
+            let file = Self.redefinition(pkg, name, body)
+            let vs = violations([file], pkg + ".H")
+            XCTAssertEqual(vs.count, 1, "\(name) \(body): \(vs)")
+            guard case .wellKnownShape(_, let element, _)? = vs.first else {
+                XCTFail("\(name) \(body): \(vs)")
+                continue
+            }
+            XCTAssertEqual(element, pkg + "." + name)
+            XCTAssertTrue("\(vs[0])".contains(detail), "\(vs[0])")
+            XCTAssertTrue("\(vs[0])".contains("§wkt-shapes"), "\(vs[0])")
+            let decoder = PXFDecoder(annotations: PXF.Annotations(files: [file]), rootMessage: pkg + ".H")
+            XCTAssertThrowsError(try decoder.decode(Anything.self, from: doc)) { error in
+                XCTAssertTrue("\(error)".contains("redefines a well-known type"), "\(error)")
+            }
+        }
+    }
+
+    /// Only the shape counts: a copy of a canonical type, a smaller Secret and
+    /// extra fields are all still the well-known type.
+    func testAWellKnownNameWithItsShapeBinds() throws {
+        let cases: [(String, String, [BodyField])] = [
+            ("pxf", "Secret", Self.body(("value", .string))),
+            ("pxf", "Secret", Self.body(("value", .string), ("hint", .string), ("fingerprint", .string))),
+            ("pxf", "Secret", Self.body(("value", .string), ("note", .string))),
+            ("pxf", "Secret", [("value", .string, false, true)]),
+            ("pxf", "BigInt", Self.body(("abs", .bytes), ("negative", .bool))),
+            ("pxf", "Decimal", Self.body(("unscaled", .bytes), ("scale", .int32), ("negative", .bool))),
+            ("pxf", "BigFloat", Self.body(("mantissa", .bytes), ("exponent", .int32), ("prec", .uint32), ("negative", .bool))),
+            ("google.protobuf", "Timestamp", Self.body(("seconds", .int64), ("nanos", .int32))),
+            ("google.protobuf", "Int32Value", Self.body(("value", .int32))),
+        ]
+        for (pkg, name, body) in cases {
+            XCTAssertEqual(violations([Self.redefinition(pkg, name, body)], pkg + ".H"), [], "\(name) \(body)")
+        }
+    }
+
+    /// A null mask needs the real FieldMask: this one has no paths to read.
+    func testAFieldMaskWithoutPathsIsRefused() {
+        let file = Self.protoFile("p.proto", package: "google.protobuf", messages: [
+            Self.message("FieldMask", [Self.field("other", 1, .string)]),
+            Self.message("H", [Self.field("_null", 1, .message, typeName: "google.protobuf.FieldMask"), Self.field("s", 2, .string)]),
+        ])
+        XCTAssertEqual(violations([file], "google.protobuf.H"),
+                       [.wellKnownShape(file: "p.proto", element: "google.protobuf.FieldMask", detail: "it has no field \"paths\"")])
+    }
+
     /// A `(pxf.default)` on a `pxf.BigFloat` reads as its literal, and binds to
     /// the fields the literal stands for.
     func testABigFloatDefaultBinds() throws {
