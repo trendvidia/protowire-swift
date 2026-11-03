@@ -267,7 +267,13 @@ private final class _PXFDecoder: Swift.Decoder {
 
         func decodeNil(forKey k: Key) throws -> Bool {
             let found = bindings(k)
-            guard let e = found.first else { return true }
+            guard let e = found.first else {
+                // The mask is synthesized, so it has no entry to find.
+                if k.stringValue == "_null", codingPath.isEmpty, decoder.result?.pointee.nullMaskPaths.isEmpty == false {
+                    return false
+                }
+                return true
+            }
             // A second binding is an error for a singular field and fine for
             // a list; only the type asked for says which, so this leaves it to
             // decode, unless the second one is what makes it singular: a null.
@@ -676,6 +682,11 @@ fileprivate final class _PXFSingleValueDecoder: Swift.Decoder, _PXFValueHolder {
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
+        // `Data` reads itself as a list of bytes, wherever it sits.
+        if let v = value as? PXF.BytesVal {
+            let bytes = v.value.map { PXF.IntVal(pos: v.pos, raw: String($0)) as PXF.Value }
+            return try _PXFUnkeyedDecoder(elements: bytes, codingPath: codingPath).unkeyedContainer()
+        }
         throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
             debugDescription: "PXF: single value cannot be decoded as unkeyed container"))
     }
@@ -686,7 +697,7 @@ extension _PXFSingleValueDecoder: SingleValueDecodingContainer {
     func decodeNil() -> Bool { value is PXF.NullVal }
     func decode(_ t: Bool.Type) throws -> Bool { if let v = value as? PXF.BoolVal { return v.value }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: String.Type) throws -> String { if let v = value as? PXF.StringVal { return v.value }; if let v = value as? PXF.IdentVal { return v.name }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
-    func decode(_ t: Double.Type) throws -> Double { if let v = value as? PXF.FloatVal, let n = Double(v.raw) { return n }; if let v = value as? PXF.IntVal, let n = Double(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
+    func decode(_ t: Double.Type) throws -> Double { if let v = value as? PXF.TimestampVal { return v.value.timeIntervalSinceReferenceDate }; if let v = value as? PXF.FloatVal, let n = Double(v.raw) { return n }; if let v = value as? PXF.IntVal, let n = Double(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: Float.Type) throws -> Float { if let v = value as? PXF.FloatVal, let n = Float(v.raw) { return n }; if let v = value as? PXF.IntVal, let n = Float(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: Int.Type) throws -> Int { if let v = value as? PXF.IntVal, let n = Int(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
     func decode(_ t: Int8.Type) throws -> Int8 { if let v = value as? PXF.IntVal, let n = Int8(v.raw) { return n }; throw DecodingError.typeMismatch(t, .init(codingPath: codingPath, debugDescription: "")) }
