@@ -181,6 +181,10 @@ extension PXF {
         /// grammar accepts one anywhere; a schema layer rejects it outside a
         /// keyed repeated field's block (draft -01 "Keyed Repeated Fields").
         public var keyQuoted: Bool = false
+        /// True for an entry the schema-bound pass added for an absent field's
+        /// `(pxf.default)`: the Swift type reads it, and `PXF.Result` still
+        /// says the field was absent.
+        var isDefault: Bool = false
 
         public static func == (lhs: Assignment, rhs: Assignment) -> Bool {
             return lhs.pos.line == rhs.pos.line && lhs.pos.column == rhs.pos.column &&

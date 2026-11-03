@@ -7,9 +7,9 @@ import SwiftProtobuf
 /// `(pxf.required)` / `(pxf.default)` on the Codable decode path
 /// (protowire-swift#11), against a descriptor built here in the shape of
 /// protowire's testdata/annotations/settings.proto plus a nested message.
-/// Semantics mirror protowire-go's postDecode: null counts as present,
-/// singular present message fields are descended into, list elements are
-/// not, and a defaulted field stays absent in the Result.
+/// Semantics mirror protowire-go's postDecode: null counts as present, every
+/// message body is checked, list elements included, and a defaulted field
+/// stays absent in the Result.
 final class PXFAnnotationsTests: XCTestCase {
 
     // MARK: descriptor
@@ -34,7 +34,7 @@ final class PXFAnnotationsTests: XCTestCase {
     ///   Level level = 7 [(pxf.default)="LEVEL_HIGH"];  enum Level { LEVEL_LOW = 0; LEVEL_HIGH = 1; }
     ///   bytes token = 8 [(pxf.default)="AQID"];
     ///   double ratio = 9 [(pxf.default)="0.5"];
-    ///   int32 bad = 10 [(pxf.default)="many"];
+    ///   message BadDefault { int32 bad = 1 [(pxf.default)="many"]; }
     private static let annotations: PXF.Annotations = {
         var limits = Google_Protobuf_DescriptorProto()
         limits.name = "Limits"
@@ -54,12 +54,23 @@ final class PXFAnnotationsTests: XCTestCase {
             field("level", 7, .enum, typeName: "settings.v1.Level", defaultLiteral: "LEVEL_HIGH"),
             field("token", 8, .bytes, defaultLiteral: "AQID"),
             field("ratio", 9, .double, defaultLiteral: "0.5"),
-            field("bad", 10, .int32, defaultLiteral: "many"),
         ]
+        var badDefault = Google_Protobuf_DescriptorProto()
+        badDefault.name = "BadDefault"
+        badDefault.field = [field("bad", 1, .int32, defaultLiteral: "many")]
+        var level = Google_Protobuf_EnumDescriptorProto()
+        level.name = "Level"
+        level.value = [("LEVEL_LOW", Int32(0)), ("LEVEL_HIGH", Int32(1))].map { name, number in
+            var v = Google_Protobuf_EnumValueDescriptorProto()
+            v.name = name
+            v.number = number
+            return v
+        }
         var file = Google_Protobuf_FileDescriptorProto()
         file.name = "settings.proto"
         file.package = "settings.v1"
-        file.messageType = [settings, limits]
+        file.messageType = [settings, limits, badDefault]
+        file.enumType = [level]
         return PXF.Annotations(files: [file])
     }()
 
@@ -134,11 +145,11 @@ final class PXFAnnotationsTests: XCTestCase {
         XCTAssertNoThrow(try decoder().decode(Settings.self, from: "name = \"svc\"\nlimits = null"))
     }
 
-    func testListElementsAreNotValidated() throws {
-        // Go's postDecode does not descend into repeated message fields;
-        // mirrored here so the ports agree on what a document means.
-        let s = try decoder().decode(Settings.self, from: "name = \"svc\"\nhistory = [ { min = 2 } ]")
-        XCTAssertEqual(s.history, [Limits(max: nil, min: 2)])
+    func testListElementsAreValidated() {
+        // protowire#352: every message body, list elements included.
+        XCTAssertThrowsError(try decoder().decode(Settings.self, from: "name = \"svc\"\nhistory = [ { min = 2 } ]")) { error in
+            XCTAssertEqual(error as? PXF.AnnotationError, .requiredFieldAbsent(path: "history[0].max"))
+        }
     }
 
     // MARK: defaults
@@ -178,9 +189,9 @@ final class PXFAnnotationsTests: XCTestCase {
         XCTAssertEqual(s.limits, Limits(max: 9, min: 1))
     }
 
-    func testDefaultsDoNotApplyInsideListElements() throws {
+    func testDefaultsApplyInsideListElements() throws {
         let s = try decoder().decode(Settings.self, from: "name = \"svc\"\nhistory = [ { max = 9 } ]")
-        XCTAssertEqual(s.history, [Limits(max: 9, min: nil)])
+        XCTAssertEqual(s.history, [Limits(max: 9, min: 1)])
     }
 
     func testDefaultsApplyToNonOptionalProperties() throws {
@@ -191,7 +202,8 @@ final class PXFAnnotationsTests: XCTestCase {
     }
 
     func testBadDefaultLiteralIsItsOwnError() {
-        XCTAssertThrowsError(try decoder().decode(BadDefault.self, from: "name = \"svc\"")) { error in
+        let decoder = PXFDecoder(annotations: Self.annotations, rootMessage: "settings.v1.BadDefault")
+        XCTAssertThrowsError(try decoder.decode(BadDefault.self, from: "")) { error in
             XCTAssertEqual(error as? PXF.AnnotationError,
                            .invalidDefault(field: "bad", literal: "many", reason: "not an int32"))
         }
