@@ -230,6 +230,9 @@ extension _PBEncoder: SingleValueEncodingContainer {
 
 /// A decoder that deserializes `Decodable` types from Protobuf binary format.
 public final class PBDecoder {
+    /// The limits for each decode call; the `Hardening` constants by default.
+    public var limits = Hardening.Limits()
+
     /// Initializes a new `PBDecoder`.
     public init() {}
     
@@ -240,26 +243,29 @@ public final class PBDecoder {
     /// - Returns: The decoded value.
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ t: T.Type, from d: Data) throws -> T {
-        let dec = try _PBDecoder(data: d)
+        try limits.checkMessageSize(d.count)
+        let dec = try _PBDecoder(data: d, limits: limits)
         return try T(from: dec)
     }
 }
 
-private final class _PBDecoder: Decoder {
+private final class _PBDecoder: Decoder, _PBLimited {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]
     let data: Data
     let depth: Int
+    let limits: Hardening.Limits
     /// Stands in for a field absent from the wire: every value reads as zero.
     let absent: Bool
     private var _fields: [Int32: [Data]]?
     private var _fieldsError: Error?
 
-    init(data: Data, depth: Int = 0, absent: Bool = false) throws {
-        if depth > Hardening.maxNestingDepth {
-            throw DecoderError.nestingDepthExceeded(depth)
+    init(data: Data, depth: Int = 0, limits: Hardening.Limits, absent: Bool = false) throws {
+        if depth > limits.maxNestingDepth {
+            throw DecoderError.nestingDepthExceeded(depth, limit: limits.maxNestingDepth)
         }
         self.data = data
         self.depth = depth
+        self.limits = limits
         self.absent = absent
     }
 
@@ -269,7 +275,7 @@ private final class _PBDecoder: Decoder {
         if T.self == Data.self { return Data() as! T }
         if let at = T.self as? _PBArray.Type { return at.init(elements: []) as! T }
         if let mt = T.self as? _PBMap.Type { return mt.init(entries: []) as! T }
-        return try T(from: _PBDecoder(data: Data(), depth: depth + 1, absent: true))
+        return try T(from: _PBDecoder(data: Data(), depth: depth + 1, limits: limits, absent: true))
     }
 
     /// Lazily walks the buffer once, caching either the field map or the
@@ -342,11 +348,11 @@ private final class _PBDecoder: Decoder {
         
         if let decType = type as? Decodable.Type {
             if let (bytes, n) = Protowire.consumeBytes(data) {
-                let sub = try _PBDecoder(data: bytes, depth: depth + 1)
+                let sub = try _PBDecoder(data: bytes, depth: depth + 1, limits: limits)
                 return (try decType.init(from: sub), n)
             }
             if let (_, n) = Protowire.consumeVarint(data) {
-                let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1)
+                let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1, limits: limits)
                 return (try decType.init(from: sub), n)
             }
         }
@@ -413,13 +419,16 @@ private final class _PBDecoder: Decoder {
                             var rem = payload
                             while !rem.isEmpty {
                                 if let (val, n) = try decoder.decodeOne(at.elementType, from: rem) {
+                                    try decoder.limits.checkRepeated(count: elements.count)
                                     elements.append(val); rem = rem.advanced(by: n)
                                 } else { break }
                             }
                         } else {
+                            try decoder.limits.checkRepeated(count: elements.count)
                             elements.append(try decoder.decodeAny(at.elementType, from: d))
                         }
                     } else {
+                        try decoder.limits.checkRepeated(count: elements.count)
                         elements.append(try decoder.decodeAny(at.elementType, from: d))
                     }
                 }
@@ -428,8 +437,9 @@ private final class _PBDecoder: Decoder {
             if let mt = T.self as? _PBMap.Type {
                 var es: [(Any, Any)] = []
                 for d in dl {
+                    try decoder.limits.checkRepeated(count: es.count)
                     let eb = Protowire.consumeBytes(d)?.value ?? Data()
-                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1)
+                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1, limits: decoder.limits)
                     let key = try sub.decodeAny(mt.keyType, from: try sub.getData(tag: 1))
                     let val = try sub.decodeAny(mt.valueType, from: try sub.getData(tag: 2))
                     es.append((key, val))

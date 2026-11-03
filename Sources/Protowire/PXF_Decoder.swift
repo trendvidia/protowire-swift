@@ -53,6 +53,9 @@ public final class PXFDecoder {
     var lastBound: PXF.BoundMessage?
     var lastBoundRows: [PXF.BoundMessage] = []
 
+    /// The limits for each decode call; the `Hardening` constants by default.
+    public var limits = Hardening.Limits()
+
     /// Initializes a new `PXFDecoder`.
     public init() {}
 
@@ -76,14 +79,16 @@ public final class PXFDecoder {
     private func bind(_ entries: [PXF.Entry]) throws -> [PXF.Entry] {
         guard let annotations, let root = rootMessage else {
             try PXF.Annotations.rejectQuotedNames(entries)
+            try checkRepeatedCounts(entries)
             return entries
         }
         try annotations.validateKeyPlacement(message: root)
         let expanded = try annotations.expandKeyed(entries, message: root)
         try PXF.Annotations.rejectQuotedNames(expanded)
         let resolve = typeResolver.map { resolver in { (url: String) in resolver.resolve(typeURL: url) != nil } }
-        let binder = PXF.Binder(annotations: annotations, resolve: resolve, discardUnknown: discardUnknown)
+        let binder = PXF.Binder(annotations: annotations, resolve: resolve, discardUnknown: discardUnknown, limits: limits)
         let bound = try binder.bind(expanded, message: root)
+        try checkRepeatedCounts(bound.entries)
         lastBound = bound.message
         return bound.entries
     }
@@ -98,7 +103,7 @@ public final class PXFDecoder {
         let annotations = annotations
         let binder = annotations.map { annotations in
             PXF.Binder(annotations: annotations, resolve: typeResolver.map { resolver in { resolver.resolve(typeURL: $0) != nil } },
-                       discardUnknown: discardUnknown)
+                       discardUnknown: discardUnknown, limits: limits)
         }
         if let annotations, !dataset.rows.isEmpty {
             try annotations.validateSchema(message: dataset.type)
@@ -113,6 +118,28 @@ public final class PXFDecoder {
         }
     }
 
+    /// An element takes at least a byte of input, so at the default limits
+    /// there is nothing to count.
+    private func checkRepeatedCounts(_ entries: [PXF.Entry]) throws {
+        if limits.maxRepeatedCount < limits.maxMessageSize {
+            try PXF.checkRepeatedCounts(entries, limit: limits.maxRepeatedCount)
+        }
+    }
+
+    /// The size check comes first, so an oversized input is not even tokenized.
+    private func parse(_ data: Data) throws -> PXF.Document {
+        try limits.checkMessageSize(data.count)
+        let parser = PXF.Parser(input: data)
+        parser.limits = limits
+        return try parser.parseDocument()
+    }
+
+    /// As `parse(_:)`, for a string, which is not copied if it is too large.
+    private func parse(_ string: String) throws -> PXF.Document {
+        try limits.checkMessageSize(string.utf8.count)
+        return try parse(Data(string.utf8))
+    }
+
     /// Decodes a value of the given type from PXF data.
     /// - Parameters:
     ///   - type: The type of value to decode.
@@ -121,7 +148,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         try validateSchema()
-        let doc = try PXF.Parser(input: data).parseDocument()
+        let doc = try parse(data)
         let entries = try bind(doc.entries)
         let decoder = _PXFDecoder(entries: entries, typeResolver: typeResolver)
         return try T(from: decoder)
@@ -135,7 +162,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func decode<T: Decodable>(_ type: T.Type, from string: String) throws -> T {
         try validateSchema()
-        let doc = try PXF.Parser(string: string).parseDocument()
+        let doc = try parse(string)
         let entries = try bind(doc.entries)
         let decoder = _PXFDecoder(entries: entries, typeResolver: typeResolver)
         return try T(from: decoder)
@@ -149,7 +176,7 @@ public final class PXFDecoder {
     /// - Throws: An error if decoding fails.
     public func unmarshalFull<T: Decodable>(_ type: T.Type, from string: String) throws -> (T, PXF.Result) {
         try validateSchema()
-        let doc = try PXF.Parser(string: string).parseDocument()
+        let doc = try parse(string)
         let entries = try bind(doc.entries)
         var result = PXF.Result()
         // Surface document-root directives on the result so callers can

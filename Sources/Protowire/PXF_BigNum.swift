@@ -34,7 +34,7 @@ extension Pxf_BigInt: Decodable {
             if let prec = PXF.splitPrecision(literal.raw).precision {
                 throw PXF.BigNumberError(message: "precision suffix p\(PXF.clip(prec)) is allowed only on a pxf.BigFloat")
             }
-            (abs, negative) = try PXF.parseBigInt(literal.raw, codingPath: decoder.codingPath)
+            (abs, negative) = try PXF.parseBigInt(literal.raw, maxDigits: literal.maxDigits, codingPath: decoder.codingPath)
             return
         }
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -91,7 +91,29 @@ extension Pxf_BigFloat: Decodable {
         exponent = Int32(truncatingIfNeeded: try c.decodeIfPresent(Int64.self, forKey: .exponent) ?? 0)
         prec = UInt32(truncatingIfNeeded: try c.decodeIfPresent(UInt64.self, forKey: .prec) ?? 0)
         negative = try c.decodeIfPresent(Bool.self, forKey: .negative) ?? false
+        if let pb = decoder as? _PBLimited {
+            try checkExponent(limit: pb.limits.maxBigFloatExponent)
+        }
     }
+
+    /// Refuses a value whose binary exponent, `exponent` plus the bit length
+    /// of `mantissa`, is past `limit` in magnitude. A zero mantissa is zero at
+    /// any exponent. Only the PB reader needs this today: PXF has no BigFloat
+    /// literal to read yet, and its block form stores the fields as written.
+    private func checkExponent(limit: Int) throws {
+        guard let first = mantissa.firstIndex(where: { $0 != 0 }) else { return }
+        let bytes = mantissa.distance(from: first, to: mantissa.endIndex)
+        let bits = (bytes - 1) * 8 + (8 - mantissa[first].leadingZeroBitCount)
+        let e = Int64(exponent) + Int64(bits)
+        if e > Int64(limit) || e < -Int64(limit) {
+            throw DecoderError.bigFloatExponentExceeded(exponent: e, limit: limit)
+        }
+    }
+}
+
+/// The PB decoder, which carries the call's limits to a type reading itself.
+protocol _PBLimited {
+    var limits: Hardening.Limits { get }
 }
 
 // Encodable writes the message form, zero fields left out as the reference's
@@ -232,14 +254,14 @@ extension PXF {
     }
 
     /// Reads a decimal literal, keeping its scale: `1.00` has scale 2.
-    static func parseDecimal(_ raw: String) throws -> Pxf_Decimal {
+    static func parseDecimal(_ raw: String, limits: Hardening.Limits = Hardening.Limits()) throws -> Pxf_Decimal {
         let (number, precision) = splitPrecision(raw)
         if let precision {
             throw BigNumberError(message: "precision suffix p\(clip(precision)) is allowed only on a pxf.BigFloat")
         }
         let digitCount = Hardening.significantDigits(number)
-        guard digitCount <= Hardening.maxNumericLiteralDigits else {
-            throw DecoderError.numericLiteralTooLong(digits: digitCount)
+        guard digitCount <= limits.maxNumericLiteralDigits else {
+            throw DecoderError.numericLiteralTooLong(digits: digitCount, limit: limits.maxNumericLiteralDigits)
         }
         var bytes = Array(number.utf8)[...]
         var out = Pxf_Decimal()
@@ -267,7 +289,7 @@ extension PXF {
     /// without one, rounding to nearest with ties to even. The suffix is
     /// checked before anything is allocated for it. The stored mantissa is the
     /// significand as a `prec`-bit integer.
-    static func parseBigFloat(_ raw: String) throws -> Pxf_BigFloat {
+    static func parseBigFloat(_ raw: String, limits: Hardening.Limits = Hardening.Limits()) throws -> Pxf_BigFloat {
         let (number, suffix) = splitPrecision(raw)
         var precision = bigFloatDefaultPrecision
         if let suffix {
@@ -275,14 +297,14 @@ extension PXF {
                 throw BigNumberError(message: "big float literal \(clip(number))p\(clip(suffix)): precision suffix p\(clip(suffix)) is not a positive bit count")
             }
             let n = bigFloatDigits(p)
-            guard n <= Hardening.maxNumericLiteralDigits else {
-                throw BigNumberError(message: "big float literal \(clip(number))p\(p): precision p\(p) renders to \(n) digits; MaxNumericLiteralDigits=\(Hardening.maxNumericLiteralDigits)")
+            guard n <= limits.maxNumericLiteralDigits else {
+                throw BigNumberError(message: "big float literal \(clip(number))p\(p): precision p\(p) renders to \(n) digits; MaxNumericLiteralDigits=\(limits.maxNumericLiteralDigits)")
             }
             precision = Int(p)
         }
         let digitCount = Hardening.significantDigits(number)
-        guard digitCount <= Hardening.maxNumericLiteralDigits else {
-            throw DecoderError.numericLiteralTooLong(digits: digitCount)
+        guard digitCount <= limits.maxNumericLiteralDigits else {
+            throw DecoderError.numericLiteralTooLong(digits: digitCount, limit: limits.maxNumericLiteralDigits)
         }
         guard let parsed = DecimalFloat(number) else {
             throw BigNumberError(message: "invalid big float: \(clip(number))")
@@ -297,7 +319,7 @@ extension PXF {
         // Refused before 10^|e| is computed: the value lies in
         // [10^(d-1), 10^d), and a decimal exponent past the binary bound is
         // past it in binary too. The exact check is below.
-        let bound = Hardening.maxBigFloatExponent
+        let bound = limits.maxBigFloatExponent
         let tooLarge = BigNumberError(message: "big float literal \(clip(number)) has a binary exponent past MaxBigFloatExponent=\(bound)")
         guard let power = parsed.exponent else { throw tooLarge }
         let decimalPoint = parsed.digits.decimalString.utf8.count + power
@@ -446,10 +468,10 @@ extension PXF {
     /// Parses an integer literal into `pxf.BigInt`'s fields: an unsigned
     /// big-endian magnitude, empty for zero, and a sign. The digit cap is
     /// checked first, so past it nothing is converted.
-    static func parseBigInt(_ raw: String, codingPath: [CodingKey]) throws -> (abs: Data, negative: Bool) {
+    static func parseBigInt(_ raw: String, maxDigits: Int = Hardening.maxNumericLiteralDigits, codingPath: [CodingKey]) throws -> (abs: Data, negative: Bool) {
         let digitCount = Hardening.significantDigits(raw)
-        guard digitCount <= Hardening.maxNumericLiteralDigits else {
-            throw DecoderError.numericLiteralTooLong(digits: digitCount)
+        guard digitCount <= maxDigits else {
+            throw DecoderError.numericLiteralTooLong(digits: digitCount, limit: maxDigits)
         }
         var digits = Array(raw.utf8)[...]
         let negative = digits.first == 45 // -

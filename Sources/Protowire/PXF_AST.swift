@@ -252,9 +252,13 @@ extension PXF {
     }
 
     public struct IntVal: Value, Equatable {
+        /// The digit cap of the decode call this literal was parsed under. A
+        /// big-number field applies it; no other field can use the digits.
+        var maxDigits: Int = Hardening.maxNumericLiteralDigits
         public var pos: Position
         public var raw: String
         public func isEqual(to other: Value) -> Bool { (other as? IntVal) == self }
+        public static func == (a: IntVal, b: IntVal) -> Bool { a.pos == b.pos && a.raw == b.raw }
     }
 
     public struct FloatVal: Value, Equatable {
