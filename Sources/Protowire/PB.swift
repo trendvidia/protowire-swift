@@ -30,9 +30,10 @@ extension Dictionary: _PBMap where Key: Decodable, Value: Decodable {
     }
 }
 
-protocol _PBOptional { var pbWrapped: Encodable? { get } }
+protocol _PBOptional { var pbWrapped: Encodable? { get }; static var pbWrappedType: Any.Type { get } }
 extension Optional: _PBOptional where Wrapped: Encodable {
     var pbWrapped: Encodable? { self.map { $0 } }
+    static var pbWrappedType: Any.Type { Wrapped.self }
 }
 
 // MARK: - Encoder
@@ -43,7 +44,9 @@ extension Optional: _PBOptional where Wrapped: Encodable {
 /// scalar, string, bytes, list or map at its zero value writes nothing. An
 /// `Optional` holding a value is written at zero too, which is how a type marks
 /// a proto3 `optional` field. A non-optional message is always written, and a
-/// nil one is absent. List elements and map entries keep their zeros.
+/// nil one is absent. List elements and map entries keep their zeros, and a
+/// nil element or map value is written as its type's zero value (for a message,
+/// the empty message), since neither is nullable on the wire.
 public final class PBEncoder {
     /// The limits for each encode call; only `maxNestingDepth` applies. A
     /// value nested deeper than a decoder at that limit reads is an error,
@@ -180,7 +183,7 @@ private final class _PBEncoder: Encoder {
                     for c in m.children { if let e = c.value as? Encodable { try e.encode(to: sub) } }
                     try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data); return
                 }
-                for c in m.children { if let e = c.value as? Encodable { try write(e, k, set: true) } }
+                for c in m.children { if let e = c.value as? Encodable { try writeElement(e, k) } }
                 return
             }
             if m.displayStyle == .dictionary {
@@ -199,6 +202,34 @@ private final class _PBEncoder: Encoder {
             // non-optional message field is a set one: the reference writes
             // the same record for a struct value, and only a nil is absent.
             let sub = try encoder.descend(v, k); try v.encode(to: sub); try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data)
+        }
+
+        /// A list element or map value. Neither is nullable on the wire, so a
+        /// nil is written as its type's zero value, as the reference writes a
+        /// nil one: a list keeps its length and a map entry its value field.
+        mutating func writeElement(_ v: Encodable, _ k: Key) throws {
+            if let o = v as? _PBOptional, o.pbWrapped == nil {
+                try writeZero(type(of: o).pbWrappedType, k)
+            } else {
+                try write(v, k, set: true)
+            }
+        }
+
+        /// The zero value of `t`, written as set. A message's is the empty
+        /// message, which is also what any type not listed here is taken for.
+        private mutating func writeZero(_ t: Any.Type, _ k: Key) throws {
+            switch t {
+            case is Data.Type: try tag(k, .bytes); Protowire.appendBytes(&encoder.data, Data())
+            case is String.Type: try string("", k)
+            case is Bool.Type: try bool(false, k)
+            case is Int.Type, is Int8.Type, is Int16.Type, is Int32.Type, is Int64.Type: try i64(0, k)
+            case is UInt.Type, is UInt8.Type, is UInt16.Type, is UInt32.Type, is UInt64.Type: try u64(0, k)
+            case is Float.Type: try f32(0, k)
+            case is Double.Type: try f64(0, k)
+            case let o as _PBOptional.Type: try writeZero(o.pbWrappedType, k)
+            case is any RawRepresentable.Type: try u64(0, k)
+            default: try tag(k, .bytes); Protowire.appendBytes(&encoder.data, Data())
+            }
         }
 
         private mutating func tag(_ k: Key, _ t: Protowire.WireType) throws {
@@ -236,7 +267,7 @@ private final class _PBEncoder: Encoder {
 
     func encodeEntry(key: Encodable, value: Encodable) throws {
         // Both fields, zero or not (protowire#295).
-        var c = KeyedContainer<PB.MapKey>(encoder: self); try c.write(key, .key, set: true); try c.write(value, .value, set: true)
+        var c = KeyedContainer<PB.MapKey>(encoder: self); try c.writeElement(key, .key); try c.writeElement(value, .value)
     }
 }
 
