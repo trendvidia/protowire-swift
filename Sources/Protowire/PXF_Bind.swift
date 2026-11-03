@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 import Foundation
+import SwiftProtobuf
 
 // The schema-bound pass. A Swift type only sees the fields it asks for, so a
 // rule about a whole message body cannot live in the Codable containers: an
@@ -507,6 +508,22 @@ extension PXF {
             default:
                 break
             }
+            if name == WellKnown.decimal, value is IntVal || value is FloatVal {
+                let raw = (value as? IntVal)?.raw ?? (value as? FloatVal)?.raw ?? ""
+                guard WellKnown.isDecimalLiteral(raw, fraction: true) else {
+                    throw fail(value.pos, "invalid decimal: \(raw)")
+                }
+                let parts = raw.drop { $0 == "-" }.split(separator: ".", omittingEmptySubsequences: false)
+                let scale = parts.count > 1 ? parts[1].utf8.count : 0
+                guard scale <= Hardening.maxNumericLiteralDigits else {
+                    throw fail(value.pos, "pxf.Decimal scale \(scale) exceeds MaxNumericLiteralDigits=\(Hardening.maxNumericLiteralDigits)")
+                }
+                let (unscaled, _) = try PXF.parseBigInt(parts.joined(), codingPath: [])
+                set("unscaled", .bytes(unscaled))
+                set("scale", .int(Int64(scale)))
+                set("negative", .bool(raw.hasPrefix("-")))
+                return out
+            }
             if WellKnown.wrappers.contains(name), let inner = message?.field(named: "value") {
                 set("value", try scalar(value, inner, named: named))
                 return out
@@ -709,6 +726,26 @@ extension PXF {
             "google.protobuf.BytesValue",
         ]
         static let nonFinite: Set<String> = ["nan", "inf"]
+
+        static let wrapperKinds: [String: Google_Protobuf_FieldDescriptorProto.TypeEnum] = [
+            "google.protobuf.DoubleValue": .double, "google.protobuf.FloatValue": .float,
+            "google.protobuf.Int64Value": .int64, "google.protobuf.UInt64Value": .uint64,
+            "google.protobuf.Int32Value": .int32, "google.protobuf.UInt32Value": .uint32,
+            "google.protobuf.BoolValue": .bool, "google.protobuf.StringValue": .string,
+            "google.protobuf.BytesValue": .bytes,
+        ]
+
+        /// The message types a default may sit on. A `pxf.Secret` has a
+        /// literal form, and is not one of them.
+        static func defaultable(_ name: String) -> Bool { writtenAsLiteral(name) }
+
+        /// A sign and digits, with one point if `fraction`.
+        static func isDecimalLiteral(_ s: String, fraction: Bool) -> Bool {
+            var digits = Array(s.utf8)[...]
+            if digits.first == 45 { digits = digits.dropFirst() }
+            if fraction, let point = digits.firstIndex(of: 46) { digits.remove(at: point) }
+            return !digits.isEmpty && digits.allSatisfy { $0 >= 48 && $0 <= 57 }
+        }
 
         /// A type with a literal form and no useful fields of its own. A
         /// `pxf.Secret` has a block form too, so a column path may enter one.

@@ -53,10 +53,22 @@ type suite struct {
 	dir     string
 	protos  []string
 	message string // for a document with neither @type nor @dataset
+	name    string // the suite's name in the record, when it isn't dir
+	fds     string // a compiled descriptor set to use instead of protos
+}
+
+func (s suite) label() string {
+	if s.name != "" {
+		return s.name
+	}
+	return s.dir
 }
 
 var suites = []suite{
 	{dir: "annotations", protos: []string{"annotations/settings.proto"}, message: "settings.v1.Settings"},
+	// The same documents against the annotation spelling, @required and
+	// @default, which needs a v1.2 compiler, so the corpus ships it compiled.
+	{dir: "annotations", name: "annotations-carrier", fds: "annotations/settings_annotated.binpb", message: "settings.annotated.v1.Settings"},
 	{dir: "any", protos: []string{"any/any.proto"}},
 	{dir: "bigfloat", protos: []string{"bigfloat/bigfloat.proto"}, message: "bf.v1.H"},
 	{dir: "blocks", protos: []string{"blocks/blocks.proto"}},
@@ -112,6 +124,23 @@ func (r resolver) FindMessageByURL(url string) (protoreflect.MessageDescriptor, 
 		return d, nil
 	}
 	return nil, fmt.Errorf("unresolved type URL %q", url)
+}
+
+// load links a descriptor set the corpus ships compiled.
+func load(path string) registry {
+	set, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var fds descriptorpb.FileDescriptorSet
+	if err := proto.Unmarshal(set, &fds); err != nil {
+		log.Fatal(err)
+	}
+	linked, err := protodesc.NewFiles(&fds)
+	if err != nil {
+		log.Fatalf("link %s: %v", path, err)
+	}
+	return registry{files: linked, set: set}
 }
 
 func compile(root, spec string, protos []string) registry {
@@ -207,7 +236,7 @@ func appendMessage(r *Record, m proto.Message, res pxf.TypeResolver) {
 }
 
 func runPXF(s suite, reg registry, file string, data []byte) Record {
-	r := Record{Suite: s.dir, File: file, Input: "pxf"}
+	r := Record{Suite: s.label(), File: file, Input: "pxf"}
 	res := resolver{reg}
 	opts := pxf.UnmarshalOptions{TypeResolver: res}
 	doc, err := pxf.Parse(data)
@@ -327,7 +356,11 @@ func main() {
 
 	regs := make(map[string]registry, len(suites))
 	for _, s := range suites {
-		regs[s.dir] = compile(testdata, *spec, s.protos)
+		if s.fds != "" {
+			regs[s.label()] = load(filepath.Join(testdata, s.fds))
+		} else {
+			regs[s.label()] = compile(testdata, *spec, s.protos)
+		}
 	}
 	textReg := compile(filepath.Join(testdata, "text"), *spec, []string{"text.proto"})
 
@@ -339,8 +372,8 @@ func main() {
 
 	var records []Record
 	for _, s := range suites {
-		reg := regs[s.dir]
-		writeDescriptors(*out, s.dir, reg)
+		reg := regs[s.label()]
+		writeDescriptors(*out, s.label(), reg)
 		docs, err := filepath.Glob(filepath.Join(testdata, s.dir, "*.pxf"))
 		if err != nil {
 			log.Fatal(err)
@@ -351,7 +384,7 @@ func main() {
 				log.Fatal(err)
 			}
 			file := filepath.Base(p)
-			copyInto(*out, s.dir, file, data)
+			copyInto(*out, s.label(), file, data)
 			records = append(records, runPXF(s, reg, file, data))
 		}
 		if s.dir == "bigfloat" {
@@ -392,7 +425,7 @@ func main() {
 	// A record that skipped the annotations looks like any other, so prove the
 	// reference applied them: this document only fails on (pxf.required).
 	for _, r := range records {
-		if r.Suite == "annotations" && r.File == "missing-required.pxf" && r.Decode != "reject" {
+		if strings.HasPrefix(r.Suite, "annotations") && r.File == "missing-required.pxf" && r.Decode != "reject" {
 			log.Fatal("the reference accepted missing-required.pxf: (pxf.required) was not applied")
 		}
 	}
