@@ -100,6 +100,11 @@ extension PXF {
             didSet { lexer.maxBase64Length = limits.maxBase64Length }
         }
 
+        /// The nesting depth the document's entries sit at: 0 for a document,
+        /// or the depth of the block a body was cut from, so that the body's
+        /// own blocks count against `limits.maxNestingDepth` where they land.
+        var bodyDepth = 0
+
         /// Initializes a new `Parser` with the given input data.
         /// - Parameter input: The data to parse.
         public init(input: Data) {
@@ -198,7 +203,7 @@ extension PXF {
                 // represents a proto message, never a map<K,V>; map_entry
                 // (`:` form) is reserved for the inside of a '{ ... }' block.
                 // See docs/grammar.ebnf -> document.
-                doc.entries.append(try parseEntry(allowMapEntry: false))
+                doc.entries.append(try parseEntry(allowMapEntry: false, depth: bodyDepth))
             }
 
             return doc

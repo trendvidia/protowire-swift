@@ -11,6 +11,8 @@ needed to run the comparison.
 | `Tests/ProtowireTests/testdata/conformance/` | Its output: `corpus/`, `descriptors/`, `reference.jsonl`, `provenance.json` |
 | `Tests/ProtowireTests/testdata/conformance/ledger.json` | Hand-kept: known disagreements, by leg |
 | `Tests/ProtowireTests/ConformanceTests.swift` | The comparison |
+| `Tests/ProtowireTests/testdata/conformance/values.tsv` | The spec's struct-binding table, copied unchanged |
+| `Tests/ProtowireTests/PBValuesTableTests.swift` | A Codable twin of each row, compared with `PBEncoder`'s bytes; known differences are listed in the test with their issue |
 
 ## What is compared
 
@@ -30,6 +32,10 @@ record in which `annotations/missing-required.pxf` was accepted, so a run that
 skipped the annotations can't pass for a good one. The `annotations-carrier`
 suite runs the same documents against the `@required` / `@default` spelling,
 from the descriptor set the corpus ships compiled.
+
+The spec's write gate, `scripts/cross_write_check.sh`, runs `check-decode
+--format pxf-pb`. That mode is the `pb` leg's bound decode, reading the
+descriptor set beside `--proto`, with its bytes on stdout.
 
 ## The ledger
 

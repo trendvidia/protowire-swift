@@ -268,6 +268,34 @@ final class PBZeroSkippingTests: XCTestCase {
         XCTAssertEqual(header.blockLength, 8)
         XCTAssertEqual(header.templateID, 1)
     }
+
+    struct Holder<T: Encodable>: Encodable {
+        var v: T
+        enum CodingKeys: Int, CodingKey { case v = 1 }
+    }
+
+    /// A nil list element or map value is written as its type's zero value,
+    /// so the bytes are those of the explicit zero: neither is nullable on the
+    /// wire, and dropping it would shorten the list or leave an entry without
+    /// its value (protowire#509's values table, rows *NullElement and
+    /// BigFloatMapNullValue).
+    func testNilElementIsTheZeroValue() throws {
+        let e = PBEncoder()
+        func same<A: Encodable, B: Encodable>(_ a: A, _ b: B, line: UInt = #line) throws {
+            XCTAssertEqual(hex(try e.encode(Holder(v: a))), hex(try e.encode(Holder(v: b))), line: line)
+        }
+        try same(["k": Int32?.none], ["k": Int32(0)])
+        try same(["k": String?.none], ["k": ""])
+        try same(["k": Data?.none], ["k": Data()])
+        try same(["k": Double?.none], ["k": 0.0])
+        try same(["k": PBTests.Status?.none], ["k": PBTests.Status.unknown])
+        try same(["k": PBTests.Message?.none], ["k": PBTests.Message(status: .unknown)])
+        try same([PBTests.Message(status: .active), nil], [PBTests.Message(status: .active), PBTests.Message(status: .unknown)])
+        try same([Pxf_BigInt?.none], [Pxf_BigInt()])
+        XCTAssertEqual(hex(try e.encode(Holder(v: ["k": Pxf_BigFloat?.none]))), "0a050a016b1200")
+        // An Optional field, rather than an element, is still absent when nil.
+        XCTAssertEqual(try e.encode(Holder(v: Pxf_BigInt?.none)), Data())
+    }
 }
 
 private func hex(_ data: Data) -> String {

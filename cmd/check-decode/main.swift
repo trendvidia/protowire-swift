@@ -9,11 +9,17 @@
 //
 // Contract:
 //
-//   check-decode --format <pxf|pb|pb-render|sbe|envelope>
+//   check-decode --format <pxf|pxf-pb|pb|pb-render|sbe|envelope>
 //                --schema <fully.qualified.MessageType>
 //                --proto  <path-to-adversarial.proto>
 //                --input  <path>
 //                [--limit NAME=VALUE]...
+//
+//   pxf-pb decodes the document against --schema and writes the message's PB
+//   bytes on stdout, map entries in key order, for the write gate
+//   (protowire/scripts/cross_write_check.sh). Like the Java, Rust and C++
+//   ports, it reads the descriptor set beside --proto (`<stem>.binpb`, built
+//   with its imports), since nothing here compiles `.proto` text.
 //
 //   --limit sets one HARDENING limit for this run, so the corpus can prove a
 //   64 MiB cap with a small fixture.
@@ -40,7 +46,8 @@
 // wrong field number flips PB expectations.
 
 import Foundation
-import Protowire
+@_spi(Conformance) import Protowire
+import SwiftProtobuf
 
 // MARK: - Hand-mirrored adversarial.proto types
 
@@ -113,7 +120,7 @@ struct BigNumHolder: Codable {
 // MARK: - CLI
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pb|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
+    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pxf-pb|pb|pb-render|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
     exit(2)
 }
 
@@ -170,10 +177,6 @@ guard let format = format, !format.isEmpty else { usage() }
 guard let schema = schema, !schema.isEmpty else { usage() }
 guard let inputPath = inputPath, !inputPath.isEmpty else { usage() }
 
-// Suppress "unused" warning under -warnings-as-errors when the only consumer
-// is the pxf format; protoPath is part of the conformance contract.
-_ = protoPath
-
 let inputURL = URL(fileURLWithPath: inputPath)
 let inputData: Data
 do {
@@ -212,18 +215,82 @@ func pxfDecode(_ data: Data, schema: String) throws {
     }
 }
 
-/// adversarial.v1.SbeWithGroup, as the comment in adversarial.proto lays it
-/// out. This harness has no proto compiler, so the template is written here.
+/// Reads the PB bytes, then writes them as PXF: the producer's side of the
+/// bounds. The decoder stores a big number's fields and checks nothing, so
+/// writing them is what is tested. A deep Tree is the producer's depth check
+/// (HARDENING.md § Recursion): the reader here allows twice the run's
+/// MaxNestingDepth, so a message one past the limit reaches the producer and
+/// the reject comes from it, not from the read. The producer keeps the run's
+/// limit.
+func pbRender(_ data: Data, schema: String) throws {
+    let dec = PBDecoder()
+    dec.limits = limits
+    dec.limits.maxNestingDepth = 2 * limits.maxNestingDepth
+    let enc = PXFEncoder()
+    enc.limits = limits
+    switch schema {
+    case "adversarial.v1.Tree":         _ = try enc.encode(dec.decode(Tree.self, from: data))
+    case "adversarial.v1.BigNumHolder": _ = try enc.encode(dec.decode(BigNumHolder.self, from: data))
+    default: throw RuntimeError("unknown schema for pb-render: \(schema)")
+    }
+}
+
+/// The SBE messages of adversarial.proto, laid out as its comments say. This
+/// harness has no proto compiler, so the templates are written here.
 func sbeDecode(_ data: Data, schema: String) throws {
-    guard schema == "adversarial.v1.SbeWithGroup" else { throw RuntimeError("unknown schema for sbe: \(schema)") }
-    let template = SBE.MessageTemplate(
-        templateID: 9001, schemaID: 9001, version: 0, blockLength: 4,
-        fields: [SBE.FieldTemplate(name: "root_value", offset: 0, size: 4, encoding: .uint32)],
-        groups: [SBE.GroupTemplate(name: "entries", blockLength: 4,
-                                   fields: [SBE.FieldTemplate(name: "entry_value", offset: 0, size: 4, encoding: .uint32)])])
+    let template: SBE.MessageTemplate
+    switch schema {
+    case "adversarial.v1.SbeWithGroup":
+        template = SBE.MessageTemplate(
+            templateID: 9001, schemaID: 9001, version: 0, blockLength: 4,
+            fields: [SBE.FieldTemplate(name: "root_value", offset: 0, size: 4, encoding: .uint32)],
+            groups: [SBE.GroupTemplate(name: "entries", blockLength: 4,
+                                       fields: [SBE.FieldTemplate(name: "entry_value", offset: 0, size: 4, encoding: .uint32)])])
+    case "adversarial.v1.SbeText":
+        // string text = 1 [(sbe.length) = 8]; bytes raw = 2 [(sbe.length) = 8].
+        template = SBE.MessageTemplate(
+            templateID: 9002, schemaID: 9001, version: 0, blockLength: 16,
+            fields: [SBE.FieldTemplate(name: "text", offset: 0, size: 8, encoding: .char),
+                     SBE.FieldTemplate(name: "raw", offset: 8, size: 8, encoding: .char, isBytes: true)])
+    default:
+        throw RuntimeError("unknown schema for sbe: \(schema)")
+    }
     let dec = SBEUnmarshaller()
     dec.limits = limits
     _ = try dec.unmarshal(data, template: template)
+}
+
+/// A fault of the harness or its arguments, not a verdict on the input: exit 2,
+/// so a missing descriptor can't pass for a rejected document.
+func harnessFault(_ msg: String) -> Never {
+    FileHandle.standardError.write(Data("check-decode: \(msg)\n".utf8))
+    exit(2)
+}
+
+/// The schema `--proto` names, read from the descriptor set beside it.
+func loadAnnotations(protoPath: String?) -> PXF.Annotations {
+    guard let protoPath, !protoPath.isEmpty else { harnessFault("--proto is required for this format") }
+    let setURL = URL(fileURLWithPath: protoPath).deletingPathExtension().appendingPathExtension("binpb")
+    do {
+        let data = try Data(contentsOf: setURL)
+        let set = try Google_Protobuf_FileDescriptorSet(serializedBytes: data, extensions: Pxf_Annotations_Extensions)
+        return PXF.Annotations(descriptorSet: set)
+    } catch {
+        harnessFault("read descriptor set \(setURL.path): \(error)")
+    }
+}
+
+/// pxf-pb: the schema-bound decode, then its bytes. Whatever the decode
+/// refuses is a reject; the bytes are written only once it has accepted.
+func pxfPB(_ data: Data, schema: String) throws -> Data {
+    let annotations = loadAnnotations(protoPath: protoPath)
+    guard annotations.message(schema) != nil else { harnessFault("no message \(schema) in the descriptor set") }
+    struct Anything: Decodable { init(from decoder: Decoder) throws {} }
+    let dec = PXFDecoder(annotations: annotations, rootMessage: schema)
+    dec.limits = limits
+    _ = try dec.decode(Anything.self, from: data)
+    guard let bytes = dec.lastBoundBytes else { harnessFault("the decode accepted but bound nothing") }
+    return bytes
 }
 
 struct RuntimeError: Error, CustomStringConvertible {
@@ -236,13 +303,12 @@ do {
     switch format {
     case "pxf":
         try pxfDecode(inputData, schema: schema)
+    case "pxf-pb":
+        FileHandle.standardOutput.write(try pxfPB(inputData, schema: schema))
     case "pb":
         try pbDecode(inputData, schema: schema)
     case "pb-render":
-        // The producer's side of the bounds: the decoder stores a big number's
-        // fields and checks nothing, so writing them is what is tested.
-        guard schema == "adversarial.v1.BigNumHolder" else { throw RuntimeError("unknown schema for pb-render: \(schema)") }
-        _ = try PXFEncoder().encode(PBDecoder().decode(BigNumHolder.self, from: inputData))
+        try pbRender(inputData, schema: schema)
     case "envelope":
         throw RuntimeError("envelope decode not yet implemented in this reference")
     case "sbe":

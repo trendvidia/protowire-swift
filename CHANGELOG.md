@@ -20,8 +20,18 @@ lockstep across language ports when the wire format changes.
   now `Encodable`: `PXFEncoder` writes the literal and `PBEncoder` the message
   fields. A precision suffix on any other field is an error naming the field.
   `Hardening.maxBigFloatExponent` is new.
+- **`check-decode --format pxf-pb`** ([#64](https://github.com/trendvidia/protowire-swift/issues/64)).
+  It writes the PB bytes of a schema-bound PXF decode, for the spec's write gate
+  (`scripts/cross_write_check.sh`), reading the descriptor set beside `--proto`.
+  `PBValuesTableTests` compares `PBEncoder` with the spec's struct-binding table
+  (`testdata/values/values.tsv`); the rows that differ are pinned against #70 and #71.
 ### Fixed
 
+- **`PBEncoder` writes a nil list element or map value as its type's zero value**
+  ([#64](https://github.com/trendvidia/protowire-swift/issues/64)), the empty message
+  for a message type. It used to drop the element, shortening the list, and to write
+  the entry without its value field. **The bytes change** for a list or map of
+  Optionals that holds a nil.
 - **`PXFEncoder` writes what the reference writes**, and `ConformanceTests` now
   compares its text with `pxf.Marshal` over the corpus. Lists were invalid text and
   now round-trip ([#32](https://github.com/trendvidia/protowire-swift/issues/32)). A
@@ -33,9 +43,26 @@ lockstep across language ports when the wire format changes.
   and a timestamp has no trailing zeros. With a schema, an enum's name is written bare.
 - `Protowire.consumeFixed32`, `consumeFixed64` and `SBE.readHeader` read a `Data`
   slice at any offset. They trapped on a misaligned one.
+- **An Any is written as `@type` and a body only when the body reads back as the
+  same bytes** ([#63](https://github.com/trendvidia/protowire-swift/issues/63),
+  protowire#501). The schema-bound marshaller that `ConformanceTests` compares
+  wrote a body for any value that parsed, which changed a value holding unknown
+  fields, fields or map entries out of order, explicit zeros, a Timestamp past
+  year 9999, or an unset `(pxf.default)` or `(pxf.required)` field. It also
+  wrote unreadable text for a chain of Anys deeper than `maxNestingDepth`. Those
+  now stay as `type_url` and `value`. `PXFEncoder` on a Swift type writes every
+  Any that way, which conforms; this is now documented.
 
 ### Changed
 
+- **`PXFEncoder` and `PBEncoder` refuse a value nested deeper than
+  `MaxNestingDepth`** ([#62](https://github.com/trendvidia/protowire-swift/issues/62),
+  protowire#502), rather than write output a decoder at the same limit refuses.
+  Depth is counted as that decoder counts it: in PXF every `{` or `[` written is
+  one level, so a map entry or list element holding a message is two; in PB every
+  submessage and map entry is one. Both take a per-call `limits`, as the decoders
+  do, and throw `EncodingError.invalidValue`. A reference cycle now meets the limit
+  instead of overflowing the stack.
 - **A schema the draft refuses now fails every decode**, before the document is
   read ([#38](https://github.com/trendvidia/protowire-swift/issues/38),
   [#39](https://github.com/trendvidia/protowire-swift/issues/39)), anywhere in the

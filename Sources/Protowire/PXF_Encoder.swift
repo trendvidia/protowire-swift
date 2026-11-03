@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 import Foundation
+import SwiftProtobuf
 
 /// The set of fully-qualified type names SwiftProtobuf generates for the
 /// nine standard protobuf wrapper types. Any field whose type matches one of
@@ -29,9 +30,10 @@ extension Dictionary: _PXFMapValue {
     var pxfEntries: [(key: Any, value: Any)] { map { ($0.key, $0.value) } }
 }
 
-/// An `Any` that opens with a type entry: `pxfTypeURL` is that entry's URL.
-protocol _PXFTypedBody {
-    var pxfTypeURL: String? { get }
+/// A value whose node is already built: an `Any` written as a type entry and
+/// a body, which was rendered and read back to decide that it could be.
+protocol _PXFPrebuilt {
+    var pxfNode: PXFNode { get }
 }
 
 /// What a value writes as. The encoder builds this tree and one function
@@ -46,6 +48,14 @@ indirect enum PXFNode {
     case map([(key: String, node: PXFNode)])
 }
 
+/// Writes an `Encodable` value as PXF text.
+///
+/// A `google.protobuf.Any` is written as whatever its own `encode(to:)` writes,
+/// which for the Any's fields is `type_url` and `value`. The encoder never
+/// unpacks one into a type entry and a body: a reader compares an Any by its
+/// bytes, so a body is allowed only when reading it gives back the stored value
+/// byte for byte (draft -01 § Any Blocks), and a Swift type carries no
+/// descriptor to check that against. Writing every Any raw conforms.
 public final class PXFEncoder {
     public var indent: String = "  "
     public var emitDefaults: Bool = false
@@ -59,6 +69,13 @@ public final class PXFEncoder {
 
     /// Fully qualified proto name of the message being encoded.
     public var rootMessage: String?
+
+    /// The limits for each encode call; only `maxNestingDepth` applies. A
+    /// value nested deeper than a decoder at that limit reads is an error,
+    /// counted as the decoder counts it: the root is depth 0, and every `{`
+    /// or `[` the text opens is one descent (HARDENING.md § Recursion).
+    /// Raise it only together with every reader's limit.
+    public var limits = Hardening.Limits()
 
     public init() {}
 
@@ -111,9 +128,17 @@ public final class PXFEncoder {
         if let annotations, let rootMessage {
             try annotations.validateKeyPlacement(message: rootMessage)
         }
-        let node = try _PXFEncoder.node(for: value, codingPath: [])
-        var renderer = PXFRenderer(indent: indent, emitDefaults: emitDefaults, annotations: annotations)
-        return renderer.document(node, message: rootMessage.flatMap { annotations?.message($0) })
+        let maxDepth = limits.maxNestingDepth
+        let node = try _PXFEncoder.node(for: value, codingPath: [], level: 0, maxDepth: maxDepth)
+        var renderer = PXFRenderer(indent: indent, emitDefaults: emitDefaults, annotations: annotations, maxDepth: maxDepth)
+        return try renderer.document(node, message: rootMessage.flatMap { annotations?.message($0) })
+    }
+
+    /// The node `value` writes as, for a caller that renders it itself.
+    /// `level` is the depth the value sits at, so the producer's depth check
+    /// counts from there.
+    static func node<T: Encodable>(_ value: T, level: Int, maxDepth: Int) throws -> PXFNode {
+        try _PXFEncoder.node(for: value, codingPath: [], level: level, maxDepth: maxDepth)
     }
 }
 
@@ -128,6 +153,12 @@ private func nullPaths(of value: Any) -> [String] {
         }
     }
     return []
+}
+
+/// The error for a block or list whose contents sit at `level`, past `maxDepth`.
+func pxfNestingError(_ value: Any, level: Int, maxDepth: Int, codingPath: [CodingKey]) -> EncodingError {
+    EncodingError.invalidValue(value, .init(codingPath: codingPath,
+        debugDescription: "pxf: nesting depth \(level) exceeds MaxNestingDepth=\(maxDepth)"))
 }
 
 /// Writes `field = null` inside the block its path names, making any block on
@@ -161,9 +192,23 @@ private final class _PXFEncoder: Swift.Encoder {
     var elements: [PXFNode] = []
     var single: PXFNode?
     var isList = false
+    /// The decoder's depth inside the block or list this value opens.
+    let level: Int
+    let maxDepth: Int
 
-    init(codingPath: [CodingKey]) {
+    init(codingPath: [CodingKey], level: Int, maxDepth: Int) {
         self.codingPath = codingPath
+        self.level = level
+        self.maxDepth = maxDepth
+    }
+
+    /// Refuses a member of a block or list that sits past the limit, before
+    /// the member is built, so a reference cycle stops here and not on the
+    /// stack. A block that stays empty is refused when it is rendered.
+    func checkMember(_ value: Any, codingPath: [CodingKey]) throws {
+        if level > maxDepth {
+            throw pxfNestingError(value, level: level, maxDepth: maxDepth, codingPath: codingPath)
+        }
     }
 
     var result: PXFNode {
@@ -173,10 +218,15 @@ private final class _PXFEncoder: Swift.Encoder {
     }
 
     /// The node for `value`, handling the types with a literal form before
-    /// any type gets to run its own `encode(to:)`.
-    static func node<T: Encodable>(for value: T, codingPath: [CodingKey]) throws -> PXFNode {
+    /// any type gets to run its own `encode(to:)`. `level` is the depth of
+    /// the contents `value` would open: one past the body holding it.
+    static func node<T: Encodable>(for value: T, codingPath: [CodingKey], level: Int, maxDepth: Int) throws -> PXFNode {
         switch value {
+        case let v as _PXFPrebuilt: return v.pxfNode
         case let v as _PXFLiteral: return .literal(try v.pxfLiteral)
+        case let v as Google_Protobuf_Duration:
+            // Past int64 nanoseconds this falls through to the message form.
+            if let text = v.pxfLiteral { return .literal(text) }
         case let v as String: return .string(v)
         case let v as Bool: return .literal(v ? "true" : "false")
         case let v as Double: return .literal(PXF.WellKnown.float(v))
@@ -205,26 +255,31 @@ private final class _PXFEncoder: Swift.Encoder {
         // one `value` member stays a nested message.
         if PXFEncoder.isProtobufWrapper(value),
            let inner = Mirror(reflecting: value).children.first(where: { $0.label == "value" })?.value as? Encodable {
-            return try Self.node(for: inner, codingPath: codingPath)
+            return try Self.node(for: inner, codingPath: codingPath, level: level, maxDepth: maxDepth)
         }
 
         if let map = value as? _PXFMapValue {
             var entries: [(key: String, node: PXFNode)] = []
             for (key, item) in map.pxfEntries {
                 guard let item = item as? Encodable else { continue }
+                if level > maxDepth {
+                    throw pxfNestingError(value, level: level, maxDepth: maxDepth, codingPath: codingPath)
+                }
                 let spelled = (key as? String).map(PXF.Format.canonicalEntryName) ?? String(describing: key)
-                entries.append((spelled, try Self.node(for: item, codingPath: codingPath + [PXFKey(stringValue: spelled)])))
+                // A value's own block opens one level inside the map's.
+                entries.append((spelled, try Self.node(for: item, codingPath: codingPath + [PXFKey(stringValue: spelled)],
+                                                       level: level + 1, maxDepth: maxDepth)))
             }
             return .map(entries.sorted { $0.key.utf8.lexicographicallyPrecedes($1.key.utf8) })
         }
 
-        let sub = _PXFEncoder(codingPath: codingPath)
+        let sub = _PXFEncoder(codingPath: codingPath, level: level, maxDepth: maxDepth)
         try value.encode(to: sub)
         guard case .message(var fields, let inner) = sub.result else { return sub.result }
         for path in nullPaths(of: value) {
             insertNull(path.split(separator: ".")[...], into: &fields)
         }
-        return .message(fields, typeURL: (value as? _PXFTypedBody)?.pxfTypeURL ?? inner)
+        return .message(fields, typeURL: inner)
     }
 
     func container<Key>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> where Key: CodingKey {
@@ -247,10 +302,15 @@ private final class _PXFEncoder: Swift.Encoder {
         }
 
         private mutating func addValue<T: Encodable>(_ value: T, _ key: Key) throws {
-            add(try _PXFEncoder.node(for: value, codingPath: codingPath + [key]), key)
+            try encoder.checkMember(value, codingPath: codingPath + [key])
+            add(try _PXFEncoder.node(for: value, codingPath: codingPath + [key],
+                                     level: encoder.level + 1, maxDepth: encoder.maxDepth), key)
         }
 
-        mutating func encodeNil(forKey key: Key) throws { add(.null, key) }
+        mutating func encodeNil(forKey key: Key) throws {
+            try encoder.checkMember(Optional<Int>.none as Any, codingPath: codingPath + [key])
+            add(.null, key)
+        }
 
         mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
             if key.stringValue == "_null" { return } // written from the mask, not as a field
@@ -283,9 +343,15 @@ private final class _PXFEncoder: Swift.Encoder {
         var codingPath: [CodingKey]
         var count: Int { encoder.elements.count }
 
-        mutating func encodeNil() throws { encoder.elements.append(.null) }
+        mutating func encodeNil() throws {
+            try encoder.checkMember(Optional<Int>.none as Any, codingPath: codingPath + [PXFKey(index: count)])
+            encoder.elements.append(.null)
+        }
         mutating func encode<T: Encodable>(_ value: T) throws {
-            encoder.elements.append(try _PXFEncoder.node(for: value, codingPath: codingPath + [PXFKey(index: count)]))
+            let path = codingPath + [PXFKey(index: count)]
+            try encoder.checkMember(value, codingPath: path)
+            encoder.elements.append(try _PXFEncoder.node(for: value, codingPath: path,
+                                                         level: encoder.level + 1, maxDepth: encoder.maxDepth))
         }
         mutating func nestedContainer<NestedKey>(keyedBy keyType: NestedKey.Type) -> KeyedEncodingContainer<NestedKey> where NestedKey: CodingKey { fatalError() }
         mutating func nestedUnkeyedContainer() -> UnkeyedEncodingContainer { fatalError() }
@@ -295,7 +361,8 @@ private final class _PXFEncoder: Swift.Encoder {
 
 extension _PXFEncoder: SingleValueEncodingContainer {
     func encodeNil() throws { single = .null }
-    func encode<T: Encodable>(_ value: T) throws { single = try Self.node(for: value, codingPath: codingPath) }
+    // A value standing in for this one opens what this one would: same level.
+    func encode<T: Encodable>(_ value: T) throws { single = try Self.node(for: value, codingPath: codingPath, level: level, maxDepth: maxDepth) }
     func encode(_ value: Bool) throws { single = .literal(value ? "true" : "false") }
     func encode(_ value: String) throws { single = .string(value) }
     func encode(_ value: Double) throws { single = .literal(PXF.WellKnown.float(value)) }
@@ -318,24 +385,36 @@ struct PXFRenderer {
     let indent: String
     let emitDefaults: Bool
     let annotations: PXF.Annotations?
+    /// The deepest level a block or list may open at, as a decoder counts it.
+    let maxDepth: Int
     private var out = ""
 
-    init(indent: String, emitDefaults: Bool, annotations: PXF.Annotations?) {
+    init(indent: String, emitDefaults: Bool, annotations: PXF.Annotations?, maxDepth: Int = Hardening.maxNestingDepth) {
         self.indent = indent
         self.emitDefaults = emitDefaults
         self.annotations = annotations
+        self.maxDepth = maxDepth
     }
 
-    mutating func document(_ node: PXFNode, message: PXF.Annotations.Message?) -> String {
+    mutating func document(_ node: PXFNode, message: PXF.Annotations.Message?) throws -> String {
         out = ""
         switch node {
         case .message(let fields, _):
-            body(fields, message: message, level: 0)
+            try body(fields, message: message, level: 0)
         default:
-            write(node, field: nil, level: 0)
+            try write(node, field: nil, level: 0)
             out += "\n"
         }
         return out
+    }
+
+    /// Refuses a block or list whose contents sit at `level`. This is the
+    /// exact check: it runs on what is written, so an empty list left out
+    /// is not counted and an empty block is.
+    private func check(_ level: Int) throws {
+        if level > maxDepth {
+            throw pxfNestingError(level, level: level, maxDepth: maxDepth, codingPath: [])
+        }
     }
 
     private mutating func pad(_ level: Int) {
@@ -343,7 +422,8 @@ struct PXFRenderer {
     }
 
     private mutating func body(_ fields: [(name: String, node: PXFNode)], typeURL: String? = nil,
-                               message: PXF.Annotations.Message?, level: Int, skipping skipped: String? = nil) {
+                               message: PXF.Annotations.Message?, level: Int, skipping skipped: String? = nil) throws {
+        try check(level)
         if let typeURL {
             pad(level)
             out += "@type = \(PXFEncoder.quote(typeURL))\n"
@@ -354,35 +434,36 @@ struct PXFRenderer {
             case .message(let inner, let url):
                 pad(level)
                 out += "\(name) {\n"
-                body(inner, typeURL: url, message: messageType(of: field, typeURL: url), level: level + 1)
+                try body(inner, typeURL: url, message: messageType(of: field, typeURL: url), level: level + 1)
                 pad(level)
                 out += "}\n"
             case .list(let items):
                 if items.isEmpty {
                     if emitDefaults {
+                        try check(level + 1)
                         pad(level)
                         out += "\(name) = []\n"
                     }
                     continue
                 }
                 if let field, let key = annotations?.keyField(of: field), keyedForm(items, key: key.name) {
-                    keyed(items, name: name, field: field, keyName: key.name, level: level)
+                    try keyed(items, name: name, field: field, keyName: key.name, level: level)
                     continue
                 }
                 pad(level)
                 out += "\(name) = "
-                write(node, field: field, level: level)
+                try write(node, field: field, level: level)
                 out += "\n"
             case .map(let entries):
                 if entries.isEmpty && !emitDefaults { continue }
                 pad(level)
                 out += "\(name) = "
-                write(node, field: field, level: level)
+                try write(node, field: field, level: level)
                 out += "\n"
             default:
                 pad(level)
                 out += "\(name) = "
-                write(node, field: field, level: level)
+                try write(node, field: field, level: level)
                 out += "\n"
             }
         }
@@ -396,7 +477,7 @@ struct PXFRenderer {
     }
 
     /// A value after `name = `, or a list element, at the level of its owner.
-    private mutating func write(_ node: PXFNode, field: PXF.Annotations.Field?, level: Int) {
+    private mutating func write(_ node: PXFNode, field: PXF.Annotations.Field?, level: Int) throws {
         switch node {
         case .literal(let text):
             out += text
@@ -407,10 +488,11 @@ struct PXFRenderer {
             out += "null"
         case .message(let fields, let url):
             out += "{\n"
-            body(fields, typeURL: url, message: messageType(of: field, typeURL: url), level: level + 1)
+            try body(fields, typeURL: url, message: messageType(of: field, typeURL: url), level: level + 1)
             pad(level)
             out += "}"
         case .list(let items):
+            try check(level + 1)
             out += "[\n"
             let keyName = field.flatMap { annotations?.keyField(of: $0) }?.name
             for (i, item) in items.enumerated() {
@@ -419,21 +501,22 @@ struct PXFRenderer {
                     // A list only reaches here when the keyed form cannot
                     // carry it, and a decoder rejects an explicit empty key.
                     let kept = fields.filter { !($0.name == keyName && Self.isEmptyString($0.node)) }
-                    write(.message(kept, typeURL: url), field: field, level: level + 1)
+                    try write(.message(kept, typeURL: url), field: field, level: level + 1)
                 } else {
-                    write(item, field: field, level: level + 1)
+                    try write(item, field: field, level: level + 1)
                 }
                 out += i + 1 < items.count ? ",\n" : "\n"
             }
             pad(level)
             out += "]"
         case .map(let entries):
+            try check(level + 1)
             out += "{\n"
             let value = field?.mapEntryFields.first { $0.number == 2 }
             for (key, item) in entries {
                 pad(level + 1)
                 out += "\(key): "
-                write(item, field: value, level: level + 1)
+                try write(item, field: value, level: level + 1)
                 out += "\n"
             }
             pad(level)
@@ -464,7 +547,8 @@ struct PXFRenderer {
         return nil
     }
 
-    private mutating func keyed(_ items: [PXFNode], name: String, field: PXF.Annotations.Field, keyName: String, level: Int) {
+    private mutating func keyed(_ items: [PXFNode], name: String, field: PXF.Annotations.Field, keyName: String, level: Int) throws {
+        try check(level + 1)
         pad(level)
         out += "\(name) {\n"
         let element = field.typeName.flatMap { annotations?.message($0) }
@@ -472,7 +556,7 @@ struct PXFRenderer {
             guard case .message(let fields, let url) = item, let k = Self.key(of: item, keyName) else { continue }
             pad(level + 1)
             out += "\(PXF.Format.canonicalEntryName(k)) {\n"
-            body(fields, typeURL: url, message: element, level: level + 2, skipping: keyName)
+            try body(fields, typeURL: url, message: element, level: level + 2, skipping: keyName)
             pad(level + 1)
             out += "}\n"
         }
