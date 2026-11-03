@@ -221,12 +221,16 @@ extension PXF.Annotations {
     }
 
     /// An explicit key assignment must not be empty, and inside a named
-    /// entry must agree with the name. The decoder takes a bare identifier
-    /// for a string, so one counts here too.
+    /// entry must agree with the name. The name binds the key field, so a
+    /// named entry's body cannot undo it, with `null` on the key or by binding
+    /// another member of the key's oneof (protowire#480).
     private func checkExplicitKey(in body: [PXF.Entry], field: Field, key: Field, entryName: String?) throws {
         for entry in body {
+            if let entryName, let conflict = bindingConflict(entry, element: field.typeName, field: field, key: key, entryName: entryName) {
+                throw conflict
+            }
             guard let a = entry as? Assignment, !a.keyQuoted, a.key == key.name else { continue }
-            guard let value = (a.value as? StringVal)?.value ?? (a.value as? PXF.IdentVal)?.name else { continue }
+            guard let value = (a.value as? StringVal)?.value else { continue }
             if value.isEmpty {
                 throw KeyedError(pos: a.value.pos, kind: .emptyKey, field: field.name, key: "",
                                  message: "explicit empty-string assignment to key field \"\(key.name)\" of keyed field \"\(field.name)\": the empty string is not a valid key")
@@ -236,6 +240,25 @@ extension PXF.Annotations {
                                  message: "key field \"\(key.name)\" = \"\(value)\" conflicts with entry name \"\(entryName)\" in keyed field \"\(field.name)\"")
             }
         }
+    }
+
+    private func bindingConflict(_ entry: PXF.Entry, element: String?, field: Field, key: Field, entryName: String) -> KeyedError? {
+        let name: String, isNull: Bool
+        if let a = entry as? Assignment {
+            (name, isNull) = (a.key, a.value is PXF.NullVal)
+        } else if let b = entry as? Block {
+            (name, isNull) = (b.name, false)
+        } else {
+            return nil
+        }
+        if name == key.name {
+            guard isNull else { return nil }
+            return KeyedError(pos: entry.pos, kind: .keyConflict, field: field.name, key: entryName,
+                              message: "null on key field \"\(key.name)\" conflicts with entry name \"\(entryName)\" in keyed field \"\(field.name)\"")
+        }
+        guard let oneof = key.oneof, let element, message(element)?.field(named: name)?.oneof == oneof else { return nil }
+        return KeyedError(pos: entry.pos, kind: .keyConflict, field: field.name, key: entryName,
+                          message: "field \"\(name)\" shares oneof \"\(oneof)\" with key field \"\(key.name)\", which entry name \"\(entryName)\" already set in keyed field \"\(field.name)\"")
     }
 
     static func sameKey(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }
@@ -270,7 +293,7 @@ extension PXF.Annotations {
                 return m
             }
         }
-        guard !field.isRepeated, let sub = typeURL ?? field.typeName else { return entries }
+        guard !field.isRepeated, let sub = typeURL.map(PXF.Binder.messageName(ofTypeURL:)) ?? field.typeName else { return entries }
         return try expandKeyed(entries, message: sub)
     }
 

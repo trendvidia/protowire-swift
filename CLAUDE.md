@@ -106,6 +106,15 @@ record with `conformance/update.sh`.
    why `rejectQuotedNames` needs no schema. Keys compare by UTF-8 bytes: Swift's
    `==` is canonical equivalence and would merge two distinct keys.
 
+8. **The schema rules are one pass over the AST, not container logic.** A
+   Swift type sees only the fields it asks for, so a rule about a whole body
+   can't live in a Codable container. `PXF.Binder` (`PXF_Bind.swift`) walks the
+   document against the descriptor, enforces the binding rules, builds a
+   `BoundMessage` and adds each applied default as an entry, and the Codable
+   decoder then runs on those entries. It mirrors `decodeFields` and `postDecode`
+   in protowire-go. `BoundMessage` stays internal: the Codable bridge remains
+   the public API, and the bytes exist so `ConformanceTests` can compare them.
+
 ## Open gaps (not yet implemented)
 
 - **`(pxf.required)` / `(pxf.default)` annotation enforcement.** The
