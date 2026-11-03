@@ -212,15 +212,26 @@ func pxfDecode(_ data: Data, schema: String) throws {
     }
 }
 
-/// adversarial.v1.SbeWithGroup, as the comment in adversarial.proto lays it
-/// out. This harness has no proto compiler, so the template is written here.
+/// The SBE messages of adversarial.proto, laid out as its comments say. This
+/// harness has no proto compiler, so the templates are written here.
 func sbeDecode(_ data: Data, schema: String) throws {
-    guard schema == "adversarial.v1.SbeWithGroup" else { throw RuntimeError("unknown schema for sbe: \(schema)") }
-    let template = SBE.MessageTemplate(
-        templateID: 9001, schemaID: 9001, version: 0, blockLength: 4,
-        fields: [SBE.FieldTemplate(name: "root_value", offset: 0, size: 4, encoding: .uint32)],
-        groups: [SBE.GroupTemplate(name: "entries", blockLength: 4,
-                                   fields: [SBE.FieldTemplate(name: "entry_value", offset: 0, size: 4, encoding: .uint32)])])
+    let template: SBE.MessageTemplate
+    switch schema {
+    case "adversarial.v1.SbeWithGroup":
+        template = SBE.MessageTemplate(
+            templateID: 9001, schemaID: 9001, version: 0, blockLength: 4,
+            fields: [SBE.FieldTemplate(name: "root_value", offset: 0, size: 4, encoding: .uint32)],
+            groups: [SBE.GroupTemplate(name: "entries", blockLength: 4,
+                                       fields: [SBE.FieldTemplate(name: "entry_value", offset: 0, size: 4, encoding: .uint32)])])
+    case "adversarial.v1.SbeText":
+        // string text = 1 [(sbe.length) = 8]; bytes raw = 2 [(sbe.length) = 8].
+        template = SBE.MessageTemplate(
+            templateID: 9002, schemaID: 9001, version: 0, blockLength: 16,
+            fields: [SBE.FieldTemplate(name: "text", offset: 0, size: 8, encoding: .char),
+                     SBE.FieldTemplate(name: "raw", offset: 8, size: 8, encoding: .char, isBytes: true)])
+    default:
+        throw RuntimeError("unknown schema for sbe: \(schema)")
+    }
     let dec = SBEUnmarshaller()
     dec.limits = limits
     _ = try dec.unmarshal(data, template: template)

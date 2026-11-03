@@ -79,4 +79,28 @@ public enum SBE {
         withUnsafeBytes(of: sid) { buffer.append(contentsOf: $0) }
         withUnsafeBytes(of: ver) { buffer.append(contentsOf: $0) }
     }
+
+    // MARK: - Text fields
+
+    /// A string field's bytes without the NUL padding after them. An interior
+    /// NUL is text and stays.
+    static func trimmingTrailingNULs(_ raw: Data) -> Data {
+        var end = raw.endIndex
+        while end > raw.startIndex && raw[end - 1] == 0 { end -= 1 }
+        return raw[raw.startIndex..<end]
+    }
+
+    /// Whether `bytes` is well-formed UTF-8: no stray continuation, truncated
+    /// sequence, overlong form, surrogate or scalar past U+10FFFF.
+    static func isValidUTF8(_ bytes: Data) -> Bool {
+        var it = bytes.makeIterator()
+        var codec = Unicode.UTF8()
+        while true {
+            switch codec.decode(&it) {
+            case .scalarValue: continue
+            case .emptyInput: return true
+            case .error: return false
+            }
+        }
+    }
 }

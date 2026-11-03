@@ -15,15 +15,21 @@ extension SBE {
         public var encoding: Encoding?
         /// The composite fields if this is a composite type.
         public var composite: [FieldTemplate]?
+        /// Whether a `.char` field holds a proto `bytes` value rather than a
+        /// `string`. A string is UTF-8 text: the decoder refuses invalid UTF-8
+        /// and the encoder cuts an overlong value on a character boundary. A
+        /// bytes field takes any bytes and is cut at its length.
+        public var isBytes: Bool
         internal var compositeView: ViewSchema?
         
         /// Initializes a new field template.
-        public init(name: String, offset: Int, size: Int, encoding: Encoding? = nil, composite: [FieldTemplate]? = nil) {
+        public init(name: String, offset: Int, size: Int, encoding: Encoding? = nil, composite: [FieldTemplate]? = nil, isBytes: Bool = false) {
             self.name = name
             self.offset = offset
             self.size = size
             self.encoding = encoding
             self.composite = composite
+            self.isBytes = isBytes
         }
     }
 
