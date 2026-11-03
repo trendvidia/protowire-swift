@@ -20,6 +20,7 @@ Each leg of `ConformanceTests` compares one thing per document:
 |---|---|---|
 | `parse` | `PXF.Parser` | `pxf.Parse` |
 | `decode` | `PXFDecoder` bound to the document's message | `UnmarshalFullDescriptor`, or `BindRow` for each dataset row |
+| `pb` | The schema-bound pass's `BoundMessage`, one per row of a dataset | The decoded message, marshalled deterministically |
 | `format` | `PXF.Format.formatDocument` | `pxf.FormatDocument` |
 
 Use the reference's full decode here. The plain `UnmarshalDescriptor` leaves
