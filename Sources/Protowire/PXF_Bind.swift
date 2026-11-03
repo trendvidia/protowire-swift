@@ -95,7 +95,7 @@ extension PXF {
             }
         }
 
-        private static func isZero(_ value: Value) -> Bool {
+        static func isZero(_ value: Value) -> Bool {
             switch value {
             case .bool(let v): return !v
             case .int(let v): return v == 0

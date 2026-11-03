@@ -58,10 +58,10 @@ public enum SBE {
     public static func readHeader(_ data: Data) -> MessageHeader? {
         guard data.count >= headerSize else { return nil }
         return MessageHeader(
-            blockLength: data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt16.self).littleEndian },
-            templateID:  data.withUnsafeBytes { $0.load(fromByteOffset: 2, as: UInt16.self).littleEndian },
-            schemaID:    data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt16.self).littleEndian },
-            version:     data.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self).littleEndian }
+            blockLength: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt16.self).littleEndian },
+            templateID:  data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 2, as: UInt16.self).littleEndian },
+            schemaID:    data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt16.self).littleEndian },
+            version:     data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 6, as: UInt16.self).littleEndian }
         )
     }
 
