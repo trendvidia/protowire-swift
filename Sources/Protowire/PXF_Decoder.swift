@@ -408,21 +408,10 @@ private final class _PXFDecoder: Swift.Decoder {
 
             let e = try getEntry(k)
 
-            // Special handling for google.protobuf.Any
-            if String(describing: T.self) == "Google_Protobuf_Any" {
-                let body = (e as? PXF.Block).map { PXF.BlockVal(pos: $0.pos, typeURL: $0.typeURL, entries: $0.entries) }
-                    ?? (e as? PXF.Assignment)?.value as? PXF.BlockVal
-                if let body, let typeURL = body.typeURL, let resolved = decoder.typeResolver?.resolve(typeURL: typeURL) {
-                    let sub = _PXFDecoder(entries: body.entries, codingPath: codingPath + [k], result: decoder.result, typeResolver: decoder.typeResolver)
-                    let decoded = try resolved.init(from: sub)
-                    if let encodable = decoded as? Encodable {
-                        let pbData = try PBEncoder().encode(encodable)
-                        var any = Google_Protobuf_Any()
-                        any.typeURL = typeURL
-                        any.value = pbData
-                        return any as! T
-                    }
-                }
+            let body = (e as? PXF.Block).map { PXF.BlockVal(pos: $0.pos, typeURL: $0.typeURL, entries: $0.entries, anyValue: $0.anyValue) }
+                ?? (e as? PXF.Assignment)?.value as? PXF.BlockVal
+            if let body, let any = try packAny(T.self, body: body, codingPath: codingPath + [k], result: decoder.result, typeResolver: decoder.typeResolver) {
+                return any
             }
 
             if let b = e as? PXF.Block {
@@ -518,6 +507,44 @@ private final class _PXFDecoder: Swift.Decoder {
         func superDecoder() throws -> Swift.Decoder { decoder }
         func superDecoder(forKey k: Key) throws -> Swift.Decoder { decoder }
     }
+}
+
+/// A `google.protobuf.Any` for `body` when `T` is one and the body opens with
+/// a type entry the resolver knows; nil otherwise, and the caller decodes `T`
+/// as usual. The resolved Swift type runs over the body either way, which is
+/// what records presence inside it.
+///
+/// The packed bytes come from the descriptor when the schema-bound pass ran
+/// (`BlockVal.anyValue`), so they are the reference's. Without a schema they
+/// come from `PBEncoder`, which needs a field number on every key: a type with
+/// string CodingKeys has none, and that is an error here, not a guess.
+private func packAny<T: Decodable>(_ t: T.Type, body: PXF.BlockVal, codingPath: [CodingKey],
+                                   result: UnsafeMutablePointer<PXF.Result>?, typeResolver: PXF.TypeResolver?) throws -> T? {
+    guard String(describing: T.self) == "Google_Protobuf_Any", let typeURL = body.typeURL,
+          let resolved = typeResolver?.resolve(typeURL: typeURL) else { return nil }
+    let decoded = try resolved.init(from: _PXFDecoder(entries: body.entries, codingPath: codingPath, result: result, typeResolver: typeResolver))
+    let value: Data
+    if let packed = body.anyValue {
+        value = packed
+    } else if let encodable = decoded as? Encodable {
+        do {
+            value = try PBEncoder().encode(encodable)
+        } catch {
+            var reason = "\(error)"
+            if case EncodingError.invalidValue(_, let context) = error { reason = context.debugDescription }
+            throw DecodingError.dataCorrupted(.init(codingPath: codingPath,
+                debugDescription: "cannot pack the google.protobuf.Any body as \(resolved): \(reason). "
+                    + "Decode with annotations and rootMessage, from a set that declares \(PXF.Binder.messageName(ofTypeURL: typeURL)), "
+                    + "to pack it from the descriptor, or give \(resolved) Int CodingKeys",
+                underlyingError: error))
+        }
+    } else {
+        return nil
+    }
+    var any = Google_Protobuf_Any()
+    any.typeURL = typeURL
+    any.value = value
+    return (any as! T)
 }
 
 extension PXF {

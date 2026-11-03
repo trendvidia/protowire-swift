@@ -47,6 +47,9 @@ extension Optional: _PBOptional where Wrapped: Encodable {
 /// nil one is absent. List elements and map entries keep their zeros, and a
 /// nil element or map value is written as its type's zero value (for a message,
 /// the empty message), since neither is nullable on the wire.
+///
+/// A field's number is its `CodingKey`'s `intValue`, so a type needs Int
+/// CodingKeys. Encoding a key without one throws `EncodingError.invalidValue`.
 public final class PBEncoder {
     /// The limits for each encode call; only `maxNestingDepth` applies. A
     /// value nested deeper than a decoder at that limit reads is an error,
@@ -232,8 +235,13 @@ private final class _PBEncoder: Encoder {
             }
         }
 
+        /// A value with no tag is not protobuf, so a key with no field number
+        /// is an error: a type with synthesized string CodingKeys has none.
         private mutating func tag(_ k: Key, _ t: Protowire.WireType) throws {
-            guard let n = k.intValue else { return }
+            guard let n = k.intValue else {
+                throw EncodingError.invalidValue(k.stringValue, .init(codingPath: codingPath + [k],
+                    debugDescription: "PB: key \"\(k.stringValue)\" has no field number; protobuf needs Int CodingKeys"))
+            }
             guard let number = Int32(exactly: n) else {
                 throw EncodingError.invalidValue(n, .init(codingPath: codingPath + [k],
                     debugDescription: "PB: field number \(n) does not fit an Int32"))

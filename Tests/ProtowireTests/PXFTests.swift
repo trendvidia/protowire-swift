@@ -22,6 +22,10 @@ extension Google_Protobuf_Any: @retroactive Codable {
     }
 }
 
+private extension Data {
+    var hex: String { map { String(format: "%02x", $0) }.joined() }
+}
+
 extension Google_Protobuf_Struct: @retroactive Codable {
     public init(from decoder: Swift.Decoder) throws {
         self.init()
@@ -311,39 +315,113 @@ final class PXFTests: XCTestCase {
         XCTAssertEqual(msg.label.value, "hello")
     }
 
+    // MARK: Any bodies (#51)
+
+    // The packed bytes below are what protowire-go 9fe20a1 writes for the same
+    // documents and schema (encoding/pxf UnmarshalOptions with a TypeResolver,
+    // then the Any's `value` field).
+
+    private struct AnyHolder: Codable { var content: Google_Protobuf_Any }
+    private struct Simple: Codable { var name: String? }
+    /// `Simple` with field numbers, which `PBEncoder` can write without a schema.
+    private struct NumberedSimple: Codable {
+        var name: String?
+        enum CodingKeys: Int, CodingKey { case name = 1 }
+    }
+
+    private struct AnyResolver: PXF.TypeResolver {
+        var type: Decodable.Type
+        func resolve(typeURL: String) -> Decodable.Type? { typeURL == "example.v1.Simple" ? type : nil }
+    }
+
+    private static let anyDoc = """
+    content = {
+            @type = "example.v1.Simple"
+        name = "Protowire"
+    }
+    """
+    /// `name = "Protowire"`: field 1, length 9.
+    private static let packedSimple = Data([0x0a, 0x09] + Array("Protowire".utf8))
+
+    /// example.v1 with `Message { Any content = 1 }`, `Many { repeated Any
+    /// contents = 1 }` and `Simple { string name = 1 }`, with or without
+    /// any.proto in the set.
+    private static func anySchema(includeAnyProto: Bool) -> PXF.Annotations {
+        func field(_ name: String, _ number: Int32, _ type: Google_Protobuf_FieldDescriptorProto.TypeEnum,
+                   typeName: String? = nil, repeated: Bool = false) -> Google_Protobuf_FieldDescriptorProto {
+            var f = Google_Protobuf_FieldDescriptorProto()
+            f.name = name
+            f.number = number
+            f.type = type
+            f.label = repeated ? .repeated : .optional
+            if let typeName { f.typeName = typeName }
+            return f
+        }
+        func message(_ name: String, _ fields: [Google_Protobuf_FieldDescriptorProto]) -> Google_Protobuf_DescriptorProto {
+            var m = Google_Protobuf_DescriptorProto()
+            m.name = name
+            m.field = fields
+            return m
+        }
+        var file = Google_Protobuf_FileDescriptorProto()
+        file.name = "example.proto"
+        file.package = "example.v1"
+        file.dependency = ["google/protobuf/any.proto"]
+        file.messageType = [
+            message("Message", [field("content", 1, .message, typeName: ".google.protobuf.Any")]),
+            message("Many", [field("contents", 1, .message, typeName: ".google.protobuf.Any", repeated: true)]),
+            message("Simple", [field("name", 1, .string)]),
+        ]
+        guard includeAnyProto else { return PXF.Annotations(files: [file]) }
+        var any = Google_Protobuf_FileDescriptorProto()
+        any.name = "google/protobuf/any.proto"
+        any.package = "google.protobuf"
+        any.syntax = "proto3"
+        any.messageType = [message("Any", [field("type_url", 1, .string), field("value", 2, .bytes)])]
+        return PXF.Annotations(files: [any, file])
+    }
+
+    /// With a schema the body packs from the descriptor, so a Swift type with
+    /// string keys gets the reference's bytes. The set may leave out
+    /// any.proto: Any's shape is fixed, and the reference always knows it.
     func testAnySupport() throws {
-        struct Message: Codable {
-            var content: Google_Protobuf_Any
-        }
-        
-        // Mock TypeResolver
-        class MyResolver: PXF.TypeResolver {
-            func resolve(typeURL: String) -> Decodable.Type? {
-                if typeURL == "example.v1.Simple" { return Simple.self }
-                return nil
-            }
-        }
-        
-        struct Simple: Codable, Equatable {
-            var name: String
-        }
-        
-        let input = """
-        content = {
-                @type = "example.v1.Simple"
-            name = "Protowire"
-        }
-        """
-        
-        let decoder = PXFDecoder()
-        decoder.typeResolver = MyResolver()
-        
-        do {
-            let msg = try decoder.decode(Message.self, from: input)
+        for includeAnyProto in [true, false] {
+            let decoder = PXFDecoder(annotations: Self.anySchema(includeAnyProto: includeAnyProto), rootMessage: "example.v1.Message")
+            decoder.typeResolver = AnyResolver(type: Simple.self)
+            let msg = try decoder.decode(AnyHolder.self, from: Self.anyDoc)
             XCTAssertEqual(msg.content.typeURL, "example.v1.Simple")
-            XCTAssertFalse(msg.content.value.isEmpty)
-        } catch {
-            XCTFail("Any support failed: \(error)")
+            XCTAssertEqual(msg.content.value, Self.packedSimple, "any.proto in the set: \(includeAnyProto)")
+            XCTAssertEqual(decoder.lastBound?.serialized().hex,
+                           "0a200a116578616d706c652e76312e53696d706c65120b0a0950726f746f77697265")
+        }
+    }
+
+    /// Without a schema the only field numbers are the Swift type's. String
+    /// keys have none, which is an error rather than bytes with no tags.
+    func testAnyBodyWithoutASchemaNeedsIntKeys() throws {
+        let decoder = PXFDecoder()
+        decoder.typeResolver = AnyResolver(type: Simple.self)
+        XCTAssertThrowsError(try decoder.decode(AnyHolder.self, from: Self.anyDoc)) { error in
+            guard case DecodingError.dataCorrupted(let context) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(context.codingPath.map(\.stringValue), ["content"])
+            XCTAssertTrue(context.debugDescription.contains(#"key "name" has no field number"#), context.debugDescription)
+            XCTAssertTrue(context.debugDescription.contains("annotations and rootMessage"), context.debugDescription)
+        }
+
+        decoder.typeResolver = AnyResolver(type: NumberedSimple.self)
+        let msg = try decoder.decode(AnyHolder.self, from: Self.anyDoc)
+        XCTAssertEqual(msg.content.value, Self.packedSimple)
+    }
+
+    /// The body is bound even when the set leaves out any.proto, so its
+    /// rules hold there as they do in the reference.
+    func testAnyBodyIsBoundWithoutAnyProto() {
+        let decoder = PXFDecoder(annotations: Self.anySchema(includeAnyProto: false), rootMessage: "example.v1.Message")
+        decoder.typeResolver = AnyResolver(type: Simple.self)
+        XCTAssertThrowsError(try decoder.decode(AnyHolder.self, from: #"content = { @type = "example.v1.Simple" nope = 1 }"#)) { error in
+            // protowire-go: `1:41: unknown field "nope" in example.v1.Simple`
+            XCTAssertEqual((error as? PXF.BindError)?.message, #"unknown field "nope" in example.v1.Simple"#)
+            XCTAssertEqual((error as? PXF.BindError)?.pos.column, 41)
         }
     }
 
