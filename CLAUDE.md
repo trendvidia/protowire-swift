@@ -26,7 +26,11 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_Result.swift` — per-field presence (set / null / absent).
 - `PXF_Annotations.swift`, `PXF_Carrier.swift` — the descriptor index, and both
   spellings of an annotation: bracket options and the 1327 carrier.
+- `PXF_SchemaChecks.swift` — the bind-time checks on declarations: reserved
+  names, retired option numbers, well-known shapes.
 - `PXF_Bind.swift` — the schema-bound pass (design call 8).
+- `PXF_Time.swift` — `Google_Protobuf_Timestamp` / `Duration` as Codable
+  (retroactive conformances): their PXF literals, and the message form for PB.
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
   — SBE primitives + dictionary codec + zero-copy reader.
 - `Envelope.swift` — hand-written `Envelope`/`AppError`/`FieldError`.
@@ -120,25 +124,28 @@ record with `conformance/update.sh`.
    decoder then runs on those entries. It mirrors `decodeFields` and `postDecode`
    in protowire-go. `BoundMessage` stays internal: the Codable bridge remains
    the public API, and the bytes exist so `ConformanceTests` can compare them.
+   `check-decode --format pxf-pb` reads them through
+   `PXFDecoder.lastBoundBytes`, which is `@_spi(Conformance)`, not API.
 
 9. **The encoder builds a tree, and one function renders it.** `PXFEncoder`
    turns a value into a `PXFNode`, and `PXFRenderer` writes the text, which is
    where a schema changes the output. `PXF_BoundText.swift` puts a `BoundMessage`
    through the same containers a user's type uses, so the `text` leg of
-   `ConformanceTests` exercises the real encoder.
+   `ConformanceTests` exercises the real encoder. It writes an Any as `@type`
+   and a body only after rendering that body, binding it at its real depth and
+   getting the stored `value` bytes back (#63). Otherwise the Any stays as
+   `type_url` and `value`, which is also all a Codable type can produce.
 
 10. **A literal carries its call's digit cap.** `Hardening.Limits` reaches the
-   parser and the PB and SBE decoders directly. The Codable containers don't
+   parser and the PB and SBE decoders directly, and `PXFEncoder` and
+   `PBEncoder`, which read only `maxNestingDepth` (a producer refuses output
+   a decoder at the same limit would refuse). The Codable containers don't
    hold it, so `PXF.Parser` writes `MaxNumericLiteralDigits` onto each `IntVal`
    for a big-number type to read. A list's or map's count is checked by the
    parser as it reads, and across bindings by `PXF.checkRepeatedCounts`.
 
 ## Open gaps (not yet implemented)
 
-- **The remaining bind-time checks.** `validateSchema` covers `(pxf.key)`,
-  default placement, the oneof rules, required with default and duplicate
-  names. Reserved names, retired option numbers and well-known shapes are
-  tracked in #55.
 - **Message-typed SBE codec.** `SBE.templates(from:)` builds a
   `MessageTemplate` from a descriptor set, but the codec reads and writes
   dictionaries, not message types. The cross-port `bench-sbe` harness isn't

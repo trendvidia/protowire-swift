@@ -41,8 +41,21 @@ extension PXF.WellKnown {
         return sign + shown.prefix(point) + "." + shown.dropFirst(point)
     }
 
-    /// `time.Time.Format(time.RFC3339Nano)` in UTC: no trailing zeros.
+    /// `time.Unix(seconds, nanos).UTC().Format(time.RFC3339Nano)`: no
+    /// trailing zeros. As `time.Unix` does, nanos outside [0, 1e9) carry into
+    /// the seconds, and a year outside 0...9999 is written as Go writes it,
+    /// `-0001` or `10000`.
     static func timestampLiteral(seconds: Int64, nanos: Int32) -> String {
+        var seconds = seconds
+        var nanos = Int64(nanos)
+        if nanos < 0 || nanos >= 1_000_000_000 {
+            seconds = seconds &+ nanos / 1_000_000_000
+            nanos %= 1_000_000_000
+            if nanos < 0 {
+                nanos += 1_000_000_000
+                seconds = seconds &- 1
+            }
+        }
         var days = seconds / 86400
         var rest = seconds % 86400
         if rest < 0 {
@@ -60,7 +73,9 @@ extension PXF.WellKnown {
         let month = mp < 10 ? mp + 3 : mp - 9
         let year = yoe + era * 400 + (month <= 2 ? 1 : 0)
         func two(_ n: Int64) -> String { n < 10 ? "0\(n)" : "\(n)" }
-        var out = "\(String(repeating: "0", count: max(0, 4 - String(year).count)))\(year)-\(two(month))-\(two(day))T"
+        let yearDigits = String(year.magnitude)
+        var out = (year < 0 ? "-" : "") + String(repeating: "0", count: max(0, 4 - yearDigits.count)) + yearDigits
+        out += "-\(two(month))-\(two(day))T"
         out += "\(two(rest / 3600)):\(two(rest / 60 % 60)):\(two(rest % 60))"
         if nanos > 0 {
             var digits = String(nanos)
@@ -242,19 +257,27 @@ extension PXF {
     /// A `BoundMessage` as an `Encodable`. Fields go in declaration order, as
     /// the reference walks them, which is the order a synthesized `encode`
     /// keeps too.
-    struct BoundText: Encodable, _PXFTypedBody {
+    struct BoundText: Encodable {
         let message: BoundMessage
         let annotations: Annotations
-        var pxfTypeURL: String? = nil
+        /// The nesting depth of this body's entries, as the parser counts it:
+        /// 0 for a document. An Any's body is checked at the depth it lands.
+        var depth = 0
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: PXFKey.self)
             for field in annotations.message(message.name)?.fields ?? [] {
                 guard let value = message.value(field.name), BoundItem.isWritten(value, field) else { continue }
-                try container.encode(BoundItem(field: field, value: value, annotations: annotations),
+                try container.encode(BoundItem(field: field, value: value, annotations: annotations, depth: depth),
                                      forKey: PXFKey(stringValue: field.name))
             }
         }
+    }
+
+    /// An Any's type entry and body, already rendered once and read back.
+    private struct OpenedAny: Encodable, _PXFPrebuilt {
+        let pxfNode: PXFNode
+        func encode(to encoder: Encoder) throws {}
     }
 
     private struct Literal: Encodable, _PXFLiteral {
@@ -266,6 +289,8 @@ extension PXF {
         let entries: [(key: BoundMessage.Value, value: BoundMessage.Value)]
         let field: Annotations.Field
         let annotations: Annotations
+        /// The depth of the map's own block, where its values sit.
+        let depth: Int
 
         var pxfEntries: [(key: Any, value: Any)] {
             guard let valueField = field.mapEntryFields.first(where: { $0.number == 2 }) else { return [] }
@@ -278,7 +303,7 @@ extension PXF {
                 case .string(let v): key = v
                 default: key = ""
                 }
-                return (key, BoundItem(field: valueField, value: entry.value, annotations: annotations, inCollection: true))
+                return (key, BoundItem(field: valueField, value: entry.value, annotations: annotations, depth: depth, inCollection: true))
             }
         }
 
@@ -289,6 +314,8 @@ extension PXF {
         let field: Annotations.Field
         let value: BoundMessage.Value
         let annotations: Annotations
+        /// The depth of the body, list or map this value is written in.
+        let depth: Int
         /// A list element or map value: an Any stays its own fields there.
         var inCollection = false
 
@@ -304,14 +331,14 @@ extension PXF {
             if case .list(let items) = value {
                 var c = encoder.unkeyedContainer()
                 for item in items {
-                    try c.encode(BoundItem(field: field, value: item, annotations: annotations, inCollection: true))
+                    try c.encode(BoundItem(field: field, value: item, annotations: annotations, depth: depth + 1, inCollection: true))
                 }
                 return
             }
             var c = encoder.singleValueContainer()
             switch value {
             case .map(let entries):
-                try c.encode(BoundMap(entries: entries, field: field, annotations: annotations))
+                try c.encode(BoundMap(entries: entries, field: field, annotations: annotations, depth: depth + 1))
             case .bool(let v): try c.encode(v)
             case .int(let v):
                 if field.type == .enum, let name = annotations.enumName(field.typeName, number: Int32(truncatingIfNeeded: v)) {
@@ -327,23 +354,59 @@ extension PXF {
             case .message(let m):
                 if let literal = try Self.literal(m, annotations) {
                     try c.encode(Literal(pxfLiteral: literal))
-                } else if m.name == WellKnown.any, !inCollection, let opened = Self.opened(m, annotations) {
+                } else if m.name == WellKnown.any, !inCollection, let opened = Self.opened(m, depth: depth + 1, annotations) {
                     try c.encode(opened)
                 } else {
-                    try c.encode(BoundText(message: m, annotations: annotations))
+                    try c.encode(BoundText(message: m, annotations: annotations, depth: depth + 1))
                 }
             case .list:
                 break
             }
         }
 
-        /// The Any's value as a body of the type it names, when that resolves.
-        private static func opened(_ m: BoundMessage, _ annotations: Annotations) -> BoundText? {
-            guard case .string(let url)? = m.value("type_url"), case .bytes(let packed)? = m.value("value") else { return nil }
+        /// The Any as a type entry and a body of the type it names, or nil to
+        /// leave it to its own fields, `type_url` and `value`. A reader
+        /// compares an Any by its bytes, so a body is written only when
+        /// reading it back gives exactly the stored value (draft -01 § Any
+        /// Blocks, protowire#501): what the text cannot say, such as an
+        /// unknown field, a field or map order, an explicit zero or a
+        /// Timestamp past year 9999, and what the reader would change, a
+        /// default or a required field left unset, all stay raw. The check is
+        /// the reader's own, as in protowire-go: render the body, parse it at
+        /// `depth`, the depth of the Any's block, bind it and compare the
+        /// packed bytes. Past the depth limit the Any is not unpacked at all,
+        /// which bounds a chain of Anys: each holds the next as bytes, so the
+        /// wire does not.
+        ///
+        /// The body is rendered with the default indent and without
+        /// `emitDefaults`, which writes only an empty list or map, and a bound
+        /// message has none to write.
+        private static func opened(_ m: BoundMessage, depth: Int, _ annotations: Annotations) -> OpenedAny? {
+            let limits = Hardening.Limits()
+            guard depth <= limits.maxNestingDepth, case .string(let url)? = m.value("type_url"), !url.isEmpty else { return nil }
+            var packed = Data()
+            if case .bytes(let v)? = m.value("value") { packed = v }
             let name = Binder.messageName(ofTypeURL: url)
-            guard annotations.message(name) != nil,
-                  let inner = try? BoundMessage(reading: packed, message: name, annotations: annotations) else { return nil }
-            return BoundText(message: inner, annotations: annotations, pxfTypeURL: url)
+            guard let message = annotations.message(name),
+                  let inner = try? BoundMessage(reading: packed, message: name, annotations: annotations),
+                  case .message(let fields, _)? = try? PXFEncoder.node(BoundText(message: inner, annotations: annotations, depth: depth),
+                                                                  level: depth, maxDepth: limits.maxNestingDepth)
+            else { return nil }
+            var renderer = PXFRenderer(indent: "  ", emitDefaults: false, annotations: annotations)
+            guard let text = try? renderer.document(.message(fields, typeURL: nil), message: message) else { return nil }
+            do {
+                let parser = Parser(input: Data(text.utf8))
+                parser.limits = limits
+                parser.bodyDepth = depth
+                let expanded = try annotations.expandKeyed(try parser.parseDocument().entries, message: name)
+                try Annotations.rejectQuotedNames(expanded)
+                let binder = Binder(annotations: annotations, resolve: { annotations.message(Binder.messageName(ofTypeURL: $0)) != nil },
+                                    limits: limits)
+                guard try binder.bind(expanded, message: name).message.serialized() == packed else { return nil }
+            } catch {
+                return nil
+            }
+            return OpenedAny(pxfNode: .message(fields, typeURL: url))
         }
 
         private static func literal(_ m: BoundMessage, _ annotations: Annotations) throws -> String? {
