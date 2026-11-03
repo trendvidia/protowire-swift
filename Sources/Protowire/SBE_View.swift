@@ -16,13 +16,21 @@ extension SBE {
         }
 
         /// Initializes a new view from data and a template.
-        public init(data: Data, template: MessageTemplate) throws {
+        public init(data: Data, template: MessageTemplate, limits: Hardening.Limits = Hardening.Limits()) throws {
+            try limits.checkMessageSize(data.count)
             guard data.count >= SBE.headerSize else { throw PB.Error.corruptData }
             let bl = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt16.self).littleEndian })
             let tid = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 2, as: UInt16.self).littleEndian }
             
             guard tid == template.templateID else { throw PB.Error.corruptData }
-            guard data.count >= SBE.headerSize + bl else { throw PB.Error.corruptData }
+            guard bl >= template.blockLength, data.count >= SBE.headerSize + bl else { throw PB.Error.corruptData }
+
+            // Reading a group can't throw, so its headers are checked here.
+            var pos = data.startIndex + SBE.headerSize + bl
+            for gt in template.groups {
+                let (entry, count) = try SBE.readGroupHeader(data, at: pos, entryBlockLength: gt.blockLength, limits: limits)
+                pos += SBE.groupHeaderSize + count * entry
+            }
             
             self.data = data
             let start = data.startIndex + SBE.headerSize
@@ -144,5 +152,21 @@ extension SBE {
             let start = data.startIndex + SBE.groupHeaderSize + i * blockLength
             return View(data: data, block: data.subdata(in: start..<(start + blockLength)), schema: schema)
         }
+    }
+
+    /// Reads the group header at `pos`: the entries' wire block length and
+    /// `numInGroup`. Refuses a block shorter than the template's, a count past
+    /// `maxRepeatedCount`, and entries the remaining bytes can't hold, before
+    /// anything is allocated for them.
+    static func readGroupHeader(_ data: Data, at pos: Int, entryBlockLength: Int, limits: Hardening.Limits) throws -> (blockLength: Int, count: Int) {
+        guard pos + groupHeaderSize <= data.endIndex else { throw PB.Error.corruptData }
+        let offset = pos - data.startIndex
+        let bl = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self).littleEndian })
+        let count = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset + 2, as: UInt16.self).littleEndian })
+        guard bl >= entryBlockLength else { throw PB.Error.corruptData }
+        let remaining = data.endIndex - pos - groupHeaderSize
+        if bl > 0 && count > remaining / bl { throw PB.Error.corruptData }
+        if count > limits.maxRepeatedCount { throw DecoderError.repeatedCountExceeded(limit: limits.maxRepeatedCount) }
+        return (bl, count)
     }
 }

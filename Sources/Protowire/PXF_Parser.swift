@@ -95,6 +95,11 @@ extension PXF {
         /// has been parsed ends.
         private var previousEnd = Position(line: 1, column: 1)
 
+        /// The limits for this parse. Set them before `parseDocument`.
+        public var limits = Hardening.Limits() {
+            didSet { lexer.maxBase64Length = limits.maxBase64Length }
+        }
+
         /// Initializes a new `Parser` with the given input data.
         /// - Parameter input: The data to parse.
         public init(input: Data) {
@@ -143,6 +148,7 @@ extension PXF {
         /// - Returns: The parsed `Document`.
         /// - Throws: A `ParserError` if parsing fails.
         public func parseDocument() throws -> Document {
+            try limits.checkMessageSize(lexer.input.count)
             var doc = Document(leadingComments: flushComments())
 
             // Top-of-document directives: @type, @<name>, @dataset, @proto
@@ -392,6 +398,7 @@ extension PXF {
                                        leadingComments: leading), end)
             case .bytes:
                 let raw = current.value
+                try limits.checkBytesLiteral(base64Length: raw.utf8.count)
                 let decoded: Data
                 if let std = Data(base64Encoded: raw) {
                     decoded = std
@@ -509,8 +516,8 @@ extension PXF {
         }
 
         private func checkDepth(_ depth: Int) throws {
-            if depth > Hardening.maxNestingDepth {
-                throw DecoderError.nestingDepthExceeded(depth)
+            if depth > limits.maxNestingDepth {
+                throw DecoderError.nestingDepthExceeded(depth, limit: limits.maxNestingDepth)
             }
         }
 
@@ -523,7 +530,8 @@ extension PXF {
                 advance()
                 return v
             case .number:
-                let v = IntVal(pos: pos, raw: current.value)
+                var v = IntVal(pos: pos, raw: current.value)
+                v.maxDigits = limits.maxNumericLiteralDigits
                 advance()
                 return v
             case .float:
@@ -535,6 +543,7 @@ extension PXF {
                 advance()
                 return v
             case .bytes:
+                try limits.checkBytesLiteral(base64Length: current.value.utf8.count)
                 guard let data = Lexer.decodeBase64(current.value) else {
                     throw ParserError.invalidBase64(pos, current.value)
                 }
@@ -583,6 +592,7 @@ extension PXF {
             advance() // [
             var elements: [Value] = []
             while current.kind != .rbracket && current.kind != .eof {
+                try limits.checkRepeated(count: elements.count)
                 elements.append(try parseValue(depth: depth))
                 if current.kind == .comma { advance() }
             }
@@ -611,6 +621,7 @@ extension PXF {
         private func parseBody(depth: Int) throws -> ([Entry], TypeEntry) {
             var entries: [Entry] = []
             var type = TypeEntry()
+            var mapEntries = 0
             while current.kind != .rbrace && current.kind != .eof {
                 if current.kind == .atType {
                     guard entries.isEmpty, type.url == nil else {
@@ -619,7 +630,12 @@ extension PXF {
                     type = try parseTypeEntry()
                     continue
                 }
-                entries.append(try parseEntry(depth: depth))
+                let entry = try parseEntry(depth: depth)
+                if entry is MapEntry {
+                    try limits.checkRepeated(count: mapEntries)
+                    mapEntries += 1
+                }
+                entries.append(entry)
             }
             if current.kind != .rbrace { throw ParserError.expectedClosingBrace(current.pos, got: current.kind) }
             advance()
