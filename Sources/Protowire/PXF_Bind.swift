@@ -379,6 +379,9 @@ extension PXF {
         /// check, by bytes: Swift's == would merge canonically equal strings.
         private func mapKey(_ m: MapEntry, _ field: Annotations.Field, _ keyField: Annotations.Field) throws -> (BoundMessage.Value, String) {
             let raw = m.key
+            if m.keyKind == .number, let precision = PXF.splitPrecision(raw).precision {
+                throw fail(m.pos, "map field \"\(field.name)\": a key cannot carry a precision suffix (p\(PXF.clip(precision)))")
+            }
             let invalid = { (type: String) in fail(m.pos, "invalid \(type) map key: \(raw)") }
             switch keyField.type {
             case .string:
@@ -464,6 +467,23 @@ extension PXF {
             func set(_ fieldName: String, _ v: BoundMessage.Value) {
                 if let f = message?.field(named: fieldName) { out.set(f, v) }
             }
+            let literal = PXF.numericLiteral(value)
+            if name == WellKnown.bigFloat, let literal {
+                let parsed = try PXF.parseBigFloat(literal)
+                set("mantissa", .bytes(parsed.mantissa))
+                set("exponent", .int(Int64(parsed.exponent)))
+                set("prec", .uint(UInt64(parsed.prec)))
+                set("negative", .bool(parsed.negative))
+                return out
+            }
+            try rejectPrecision(value, named)
+            if name == WellKnown.decimal, let literal {
+                let parsed = try PXF.parseDecimal(literal)
+                set("unscaled", .bytes(parsed.unscaled))
+                set("scale", .int(Int64(parsed.scale)))
+                set("negative", .bool(parsed.negative))
+                return out
+            }
             switch value {
             case let t as TimestampVal where name == WellKnown.timestamp:
                 guard let (seconds, nanos) = WellKnown.parseTimestamp(t.raw) else {
@@ -498,8 +518,16 @@ extension PXF {
             throw fail(value.pos, "expected a message value for field \"\(named.name)\", got \(type(of: value))")
         }
 
+        /// A precision suffix belongs on a `pxf.BigFloat` and nowhere else.
+        private func rejectPrecision(_ value: Value, _ named: Annotations.Field) throws {
+            if let raw = PXF.numericLiteral(value), let precision = PXF.splitPrecision(raw).precision {
+                throw fail(value.pos, "precision suffix p\(PXF.clip(precision)) is allowed only on a pxf.BigFloat, not on field \"\(named.name)\"")
+            }
+        }
+
         private func scalar(_ value: Value, _ field: Annotations.Field, named: Annotations.Field) throws -> BoundMessage.Value {
             let pos = value.pos
+            try rejectPrecision(value, named)
             switch field.type {
             case .string:
                 guard let v = value as? StringVal else { throw fail(pos, "expected string for field \"\(named.name)\"") }
