@@ -24,15 +24,16 @@ extension PXF {
     /// field is still reported absent by `PXF.Result`, since it was not in
     /// the input.
     ///
-    /// A field carrying both annotations has no single meaning, so draft -01
-    /// ("Required and Default") refuses the schema, whatever a document
-    /// contains. Building an `Annotations` records such a field and does not
-    /// fail; `validateRequiredDefault(message:)` reports it, and `PXFDecoder`
-    /// calls that before it reads a document.
+    /// Some schemas have no single meaning, and the draft refuses them
+    /// whatever a document contains: both annotations on one field, a default
+    /// no literal can denote, and the oneof rules. Building an `Annotations`
+    /// records them and does not fail; `validateSchema(message:)` reports
+    /// them, and `PXFDecoder` calls that before it reads a document.
     ///
-    /// The descriptor set must have been parsed with
-    /// `Pxf_Annotations_Extensions` (or a map containing it), otherwise the
-    /// options are unknown fields and nothing is annotated.
+    /// Both spellings are read: the bracket options, and `@required` /
+    /// `@default` in the 1327 annotation carrier. The brackets are read from
+    /// the extension fields of a descriptor set parsed with
+    /// `Pxf_Annotations_Extensions`, and from its unknown bytes otherwise.
     public struct Annotations {
         /// One proto field, as far as the decoder needs to know it.
         public struct Field: Equatable {
@@ -44,7 +45,8 @@ extension PXF {
             public var isRepeated: Bool
             public var isMap: Bool
             public var required: Bool
-            /// The `(pxf.default)` literal as written in the schema.
+            /// The default as a literal: `(pxf.default)`, or `@default` reduced
+            /// to the same form.
             public var defaultLiteral: String?
             /// The `(pxf.key)` value as written in the schema, valid or not;
             /// `Annotations.keyField(of:)` resolves a well-placed one.
@@ -64,6 +66,16 @@ extension PXF {
             public var isPacked: Bool = false
             /// For a map field, its entry's key and value fields.
             public var mapEntryFields: [Field] = []
+            /// Which spelling supplied `required`, for a diagnostic that
+            /// quotes what the author wrote.
+            var requiredFromCarrier = false
+            /// Which spelling supplied the default.
+            var defaultFromCarrier = false
+            /// Why the default can't be used; see `FieldAnnotations`.
+            var defaultProblem: String?
+
+            var requiredSpelling: String { requiredFromCarrier ? "@required" : "(pxf.required)" }
+            var defaultSpelling: String { defaultFromCarrier ? "@default" : "(pxf.default)" }
         }
 
         /// One message: its fields by proto name, in declaration order.
@@ -82,12 +94,9 @@ extension PXF {
         private var messageFiles: [String: String] = [:]
         /// Per file, the files it imports.
         private var imports: [String: [String]] = [:]
-        /// Per file, the fields it declares with both annotations. Computed
-        /// once here; a decode only walks the import closure.
-        private var requiredDefaultViolations: [String: [AnnotationError]] = [:]
-        /// Per file, the `(pxf.key)` placements it declares that are invalid.
-        /// Computed once here; a decode only walks the import closure.
-        private var keyViolations: [String: [AnnotationError]] = [:]
+        /// Per file, what it declares that the draft refuses. Computed once
+        /// here; a decode only walks the import closure.
+        private var violations: [String: [AnnotationError]] = [:]
 
         /// Every message declared in `descriptorSet`, including nested ones.
         public init(descriptorSet: Google_Protobuf_FileDescriptorSet) {
@@ -102,22 +111,76 @@ extension PXF {
                 for m in file.messageType { index(m, prefix: prefix, file: file) }
             }
             for (fullName, file) in messageFiles.sorted(by: { $0.key < $1.key }) {
-                for field in messages[fullName]?.fields ?? [] {
-                    if field.required && field.defaultLiteral != nil {
-                        requiredDefaultViolations[file, default: []].append(
-                            .requiredWithDefault(file: file, element: fullName + "." + field.name))
-                    }
-                    if let problem = keyFieldProblem(of: field) {
-                        keyViolations[file, default: []].append(.invalidKeyPlacement(
-                            file: file, element: fullName + "." + field.name, key: field.keyName ?? "", detail: problem))
+                guard let message = messages[fullName] else { continue }
+                violations[file, default: []] += schemaViolations(of: message, file: file)
+            }
+        }
+
+        private func schemaViolations(of message: Message, file: String) -> [AnnotationError] {
+            var out: [AnnotationError] = []
+            func element(_ field: Field) -> String { message.fullName + "." + field.name }
+            var oneofDefaults: [(oneof: String, field: Field)] = []
+            for field in message.fields {
+                if let problem = keyFieldProblem(of: field) {
+                    out.append(.invalidKeyPlacement(file: file, element: element(field), key: field.keyName ?? "", detail: problem))
+                }
+                if let problem = field.defaultProblem {
+                    out.append(.invalidDefaultPlacement(file: file, element: element(field), spelling: field.defaultSpelling, literal: nil, detail: problem))
+                }
+                if let literal = field.defaultLiteral, let problem = Self.defaultPlacementProblem(field) {
+                    out.append(.invalidDefaultPlacement(file: file, element: element(field), spelling: field.defaultSpelling, literal: literal, detail: problem))
+                }
+                if field.required && field.defaultLiteral != nil {
+                    if field.requiredFromCarrier || field.defaultFromCarrier {
+                        out.append(.invalidRequiredPlacement(file: file, element: element(field), spelling: field.requiredSpelling,
+                            detail: "\(field.requiredSpelling) and \(field.defaultSpelling) are exclusive on one field: the first rejects a document where the field is absent, and the second treats it as supplied"))
+                    } else {
+                        out.append(.requiredWithDefault(file: file, element: element(field)))
                     }
                 }
+                if let oneof = field.oneof {
+                    if field.required {
+                        out.append(.invalidRequiredPlacement(file: file, element: element(field), spelling: field.requiredSpelling,
+                            detail: "\(field.requiredSpelling) is not valid on a member of oneof \"\(oneof)\": read per field it demands that one arm always be chosen, which makes every other arm undecodable"))
+                    }
+                    if field.defaultLiteral != nil { oneofDefaults.append((oneof, field)) }
+                }
             }
+            for (oneof, field) in oneofDefaults {
+                let members = oneofDefaults.filter { $0.oneof == oneof }.map(\.field)
+                guard members.count > 1 else { continue }
+                let names = members.map(\.name).joined(separator: ", ")
+                out.append(.invalidDefaultPlacement(file: file, element: element(field), spelling: field.defaultSpelling, literal: field.defaultLiteral,
+                    detail: "at most one member of oneof \"\(oneof)\" may carry a default; \(members.count) do (\(names))"))
+            }
+            return out
+        }
+
+        /// Why one literal can't denote `field`, or nil when it can. A literal
+        /// that doesn't parse as the field's type stays a decode-time error,
+        /// as in the reference: placement is decidable from the descriptor.
+        private static func defaultPlacementProblem(_ field: Field) -> String? {
+            let name = field.defaultSpelling
+            if field.isMap { return "\(name) is not valid on map fields: one literal cannot denote a map" }
+            if field.isRepeated { return "\(name) is not valid on repeated fields: one literal cannot denote a list" }
+            if field.type == .group { return "\(name) is not valid on group fields" }
+            if field.type == .message, !WellKnown.defaultable(field.typeName ?? "") {
+                return "\(name) is not valid on message type \(field.typeName ?? ""): no PXF literal denotes it"
+            }
+            return nil
         }
 
         private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String, file: Google_Protobuf_FileDescriptorProto) {
             let fullName = prefix + m.name
+            // A descriptor can be untrusted input, so a repeated name is the
+            // schema's error to report. The first declaration stays indexed.
+            guard messages[fullName] == nil else {
+                violations[file.name, default: []].append(.duplicateName(file: file.name, name: fullName))
+                return
+            }
             messageFiles[fullName] = file.name
+            // Claimed now, so a nested type repeating the name is seen as a repeat.
+            messages[fullName] = Message(fullName: fullName, fields: [])
             for e in m.enumType { indexEnum(e, prefix: fullName + ".") }
             let nested = Dictionary(m.nestedType.map { (fullName + "." + $0.name, $0) }) { first, _ in first }
             var fields: [Field] = []
@@ -177,6 +240,7 @@ extension PXF {
                 }
             }
 
+            let annotated = FieldAnnotations.read(fd)
             return Field(
                 name: fd.name,
                 number: fd.number,
@@ -184,14 +248,17 @@ extension PXF {
                 typeName: typeName,
                 isRepeated: isRepeated,
                 isMap: false,
-                required: fd.options.hasPxf_required && fd.options.Pxf_required,
-                defaultLiteral: fd.options.hasPxf_default ? fd.options.Pxf_default : nil,
-                keyName: fd.options.hasPxf_key ? fd.options.Pxf_key : nil,
+                required: annotated.required,
+                defaultLiteral: annotated.defaultLiteral,
+                keyName: annotated.keyName,
                 mapValueMessage: nil,
                 oneof: inRealOneof && oneofIndex < m.oneofDecl.count ? m.oneofDecl[oneofIndex].name : nil,
                 hasPresence: hasPresence,
                 isRequiredLabel: fd.label == .required || presence == .legacyRequired,
-                isPacked: isPacked)
+                isPacked: isPacked,
+                requiredFromCarrier: annotated.requiredFromCarrier,
+                defaultFromCarrier: annotated.defaultFromCarrier,
+                defaultProblem: annotated.defaultProblem)
         }
 
         /// The value of enum `name` called `value`.
@@ -210,34 +277,42 @@ extension PXF {
 
         // MARK: - bind-time checks
 
-        /// Rejects a field with `(pxf.required)` and `(pxf.default)` anywhere
-        /// in the import closure of the file declaring `fullName`, not just
-        /// in that file: a decoder recurses into imported types, and the
-        /// schema must fail whether or not a document reaches them
-        /// (draft -01, "Scope of Bind-Time Checks"). A file outside the
-        /// closure is not this message's schema and is not reported, and an
-        /// import the descriptor set does not contain cannot be checked.
-        /// `(pxf.required) = false` requires nothing and is not a conflict.
+        /// Rejects a schema the draft refuses, anywhere in the import closure
+        /// of the file declaring `fullName`, not just in that file: a decoder
+        /// recurses into imported types, and the schema must fail whether or
+        /// not a document reaches them (draft -01, "Scope of Bind-Time
+        /// Checks"). A file outside the closure is not this message's schema
+        /// and is not reported, and an import the descriptor set does not
+        /// contain cannot be checked.
+        public func validateSchema(message fullName: String) throws {
+            try throwFirst(inClosureOf: fullName) { _ in true }
+        }
+
+        /// `validateSchema(message:)`, for `(pxf.required)` with `(pxf.default)`
+        /// on one field. `(pxf.required) = false` requires nothing and is not
+        /// a conflict.
         public func validateRequiredDefault(message fullName: String) throws {
-            try throwFirst(of: requiredDefaultViolations, inClosureOf: fullName)
+            try throwFirst(inClosureOf: fullName) {
+                if case .requiredWithDefault = $0 { return true }
+                return false
+            }
         }
 
-        /// Rejects a misplaced `(pxf.key)` anywhere in the import closure of
-        /// the file declaring `fullName`, not just in that file: a decoder
-        /// recurses into imported types, and a dead annotation there must not
-        /// wait for a document to exercise it. A file outside the closure is
-        /// not this message's schema and is not reported.
+        /// `validateSchema(message:)`, for a misplaced `(pxf.key)`.
         public func validateKeyPlacement(message fullName: String) throws {
-            try throwFirst(of: keyViolations, inClosureOf: fullName)
+            try throwFirst(inClosureOf: fullName) {
+                if case .invalidKeyPlacement = $0 { return true }
+                return false
+            }
         }
 
-        private func throwFirst(of violations: [String: [AnnotationError]], inClosureOf fullName: String) throws {
+        private func throwFirst(inClosureOf fullName: String, where matches: (AnnotationError) -> Bool) throws {
             guard !violations.isEmpty, let root = messageFiles[fullName] else { return }
             var visited: Set<String> = []
             var pending = [root]
             while let file = pending.popLast() {
                 guard visited.insert(file).inserted else { continue }
-                if let first = violations[file]?.first { throw first }
+                if let first = violations[file]?.first(where: matches) { throw first }
                 pending += imports[file] ?? []
             }
         }
@@ -282,23 +357,28 @@ extension PXF {
         // MARK: - default
 
         /// The value an absent `field` takes, or nil when it declares no
-        /// `(pxf.default)`. The literal is read by the field's proto type
-        /// the way the Go reference's `parseScalarDefault` reads it: a
-        /// `string` takes the literal verbatim, `bytes` decodes it as
-        /// base64, `bool` accepts `true` / `false`, numbers must parse in
-        /// their width, an enum names a value, and a message default is a
-        /// PXF block.
+        /// default. The literal is read by the field's proto type the way
+        /// the Go reference's `applyDefaultImpl` reads it: a `string` takes
+        /// the literal verbatim, `bytes` decodes it as base64, `bool` accepts
+        /// exactly `true` / `false`, numbers must parse in their width, an
+        /// enum names a value, and a message is one of the types with a
+        /// literal form.
         public func defaultValue(for field: Field) throws -> Value? {
             guard let literal = field.defaultLiteral else { return nil }
+            return try defaultValue(literal, type: field.type, typeName: field.typeName, field: field.name)
+        }
+
+        private func defaultValue(_ literal: String, type: Google_Protobuf_FieldDescriptorProto.TypeEnum,
+                                  typeName: String?, field: String) throws -> Value {
             let pos = Position(line: 0, column: 0)
             func invalid(_ reason: String) -> AnnotationError {
-                .invalidDefault(field: field.name, literal: literal, reason: reason)
+                .invalidDefault(field: field, literal: literal, reason: reason)
             }
-            switch field.type {
+            switch type {
             case .string:
                 return StringVal(pos: pos, value: literal)
             case .bytes:
-                guard let data = Data(base64Encoded: literal) else { throw invalid("not base64") }
+                guard let data = PXF.decodeBase64Lenient(literal) else { throw invalid("not base64") }
                 return BytesVal(pos: pos, value: data)
             case .bool:
                 switch literal {
@@ -328,15 +408,40 @@ extension PXF {
                 if Int32(literal) != nil { return IntVal(pos: pos, raw: literal) }
                 return IdentVal(pos: pos, name: literal)
             case .message, .group:
-                // Parsed as a document body so the block is checked by the
-                // same grammar as the input; a scalar literal here is an
-                // error, as in Go's applyMessageDefault.
-                let doc: Document
-                do { doc = try Parser(string: "__default = " + literal).parseDocument() } catch { throw invalid("\(error)") }
-                guard let a = doc.entries.first as? Assignment, let bv = a.value as? BlockVal else {
-                    throw invalid("a message default must be a { ... } block")
-                }
-                return bv
+                return try messageDefault(literal, typeName: typeName, field: field)
+            }
+        }
+
+        /// The message types a single literal denotes, read as a document
+        /// would write them. The bind-time check refuses every other type.
+        private func messageDefault(_ literal: String, typeName: String?, field: String) throws -> Value {
+            let pos = Position(line: 0, column: 0)
+            func invalid(_ reason: String) -> AnnotationError {
+                .invalidDefault(field: field, literal: literal, reason: reason)
+            }
+            let name = typeName ?? ""
+            if let inner = WellKnown.wrapperKinds[name] {
+                return try defaultValue(literal, type: inner, typeName: nil, field: field)
+            }
+            switch name {
+            case WellKnown.timestamp:
+                guard let (seconds, nanos) = WellKnown.parseTimestamp(literal) else { throw invalid("not a timestamp") }
+                return TimestampVal(pos: pos, value: Date(timeIntervalSince1970: Double(seconds) + Double(nanos) / 1e9), raw: literal)
+            case WellKnown.duration:
+                guard let (seconds, nanos) = WellKnown.parseDuration(literal) else { throw invalid("not a duration") }
+                return DurationVal(pos: pos, value: Double(seconds) + Double(nanos) / 1e9, raw: literal)
+            case WellKnown.bigInt:
+                guard WellKnown.isDecimalLiteral(literal, fraction: false) else { throw invalid("not a big integer") }
+                return IntVal(pos: pos, raw: literal)
+            case WellKnown.decimal:
+                guard WellKnown.isDecimalLiteral(literal, fraction: true) else { throw invalid("not a decimal") }
+                return literal.contains(".") ? FloatVal(pos: pos, raw: literal) : IntVal(pos: pos, raw: literal)
+            case WellKnown.bigFloat:
+                let number = literal.split(separator: "p", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                guard Double(number) != nil else { throw invalid("not a big float") }
+                return FloatVal(pos: pos, raw: literal)
+            default:
+                throw invalid("default values not supported for message type \(name)")
             }
         }
     }
@@ -350,6 +455,14 @@ extension PXF {
         case requiredWithDefault(file: String, element: String)
         /// A `(pxf.key)` placement the schema layer must refuse.
         case invalidKeyPlacement(file: String, element: String, key: String, detail: String)
+        /// A default no single literal can denote, one that spells two values,
+        /// or a second default in a oneof. `spelling` is the form the author
+        /// wrote, and `literal` is nil when the default reduced to none.
+        case invalidDefaultPlacement(file: String, element: String, spelling: String, literal: String?, detail: String)
+        /// `(pxf.required)` where it can't hold, such as on a oneof member.
+        case invalidRequiredPlacement(file: String, element: String, spelling: String, detail: String)
+        /// Two messages with one fully qualified name.
+        case duplicateName(file: String, name: String)
 
         public var description: String {
             switch self {
@@ -363,6 +476,13 @@ extension PXF {
                     + "(draft -01, \"Required and Default\")"
             case .invalidKeyPlacement(let file, let element, let key, let detail):
                 return "\(file): field \"\(element)\": invalid (pxf.key) = \"\(key)\": \(detail) (draft -01 §3.13)"
+            case .invalidDefaultPlacement(let file, let element, let spelling, let literal, let detail):
+                let shown = literal.map { "\(spelling) = \"\($0)\"" } ?? spelling
+                return "\(file): field \"\(element)\": invalid \(shown): \(detail) (draft -01 §annotation-extensions)"
+            case .invalidRequiredPlacement(let file, let element, let spelling, let detail):
+                return "\(file): field \"\(element)\": invalid \(spelling): \(detail) (draft -01 §annotation-extensions)"
+            case .duplicateName(let file, let name):
+                return "\(file): message \"\(name)\" is declared twice"
             }
         }
     }

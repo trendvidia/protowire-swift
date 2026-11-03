@@ -23,6 +23,26 @@ lockstep across language ports when the wire format changes.
 
 ### Changed
 
+- **A schema the draft refuses now fails every decode**, before the document is
+  read ([#38](https://github.com/trendvidia/protowire-swift/issues/38),
+  [#39](https://github.com/trendvidia/protowire-swift/issues/39)), anywhere in the
+  import closure: a default on a repeated, map or group field or on a message
+  type with no literal, `(pxf.required)` on a oneof member, two defaults in one
+  oneof, and two messages with one name. `PXF.Annotations.validateSchema(message:)`
+  reports the same without a document. `PXF.AnnotationError` gains three cases, so
+  an exhaustive `switch` over it needs them. `validateRequiredDefault` and
+  `validateKeyPlacement` still report their one rule each.
+- **`@required` and `@default` are read**, from the 1327 annotation carrier, so a
+  schema migrated to the annotation form is enforced as the bracket form is. Two
+  spellings of one default that differ refuse the schema. An `@default` holding a
+  `big_float_value` refuses it too, until #26.
+- Bracket annotations are read from a descriptor set parsed without
+  `Pxf_Annotations_Extensions`, where they used to be ignored.
+- A message-typed `(pxf.default)` is a literal, as in the reference: a Timestamp,
+  Duration, wrapper, `pxf.BigInt`, `pxf.Decimal` or `pxf.BigFloat`. **A `{ ... }`
+  block as a default is now refused**; `defaultValue(for:)` used to accept one.
+- A `pxf.Decimal` literal binds in a schema-bound decode. A Swift `Pxf_Decimal`
+  still reads only the block form.
 - **A decoder with a schema now enforces the draft's binding rules across the
   whole document**, whatever the Swift type asks for. `PXFDecoder(annotations:rootMessage:)`
   rejects a singular field or a map key bound twice
