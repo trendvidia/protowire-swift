@@ -20,6 +20,19 @@ lockstep across language ports when the wire format changes.
   now `Encodable`: `PXFEncoder` writes the literal and `PBEncoder` the message
   fields. A precision suffix on any other field is an error naming the field.
   `Hardening.maxBigFloatExponent` is new.
+### Fixed
+
+- **`PXFEncoder` writes what the reference writes**, and `ConformanceTests` now
+  compares its text with `pxf.Marshal` over the corpus. Lists were invalid text and
+  now round-trip ([#32](https://github.com/trendvidia/protowire-swift/issues/32)). A
+  nested `_null` path is written inside its own block, not as a dotted root entry
+  ([#42](https://github.com/trendvidia/protowire-swift/issues/42)). **The text
+  changes for existing types:** nested messages are `name { ... }` rather than
+  `name = { ... }`, lists are one element per line, map keys are sorted, an empty list
+  or map is left out unless `emitDefaults` is set, floats use Go's `%g` spelling,
+  and a timestamp has no trailing zeros. With a schema, an enum's name is written bare.
+- `Protowire.consumeFixed32`, `consumeFixed64` and `SBE.readHeader` read a `Data`
+  slice at any offset. They trapped on a misaligned one.
 
 ### Changed
 

@@ -52,4 +52,35 @@ final class PBTests: XCTestCase {
         let decoded = try decoder.decode(PackedMessage.self, from: data)
         XCTAssertEqual(decoded, msg)
     }
+
+    /// A fixed-width field sits at whatever offset the bytes before it leave.
+    /// `PBDecoder` copies each field first, so this input never trapped it;
+    /// the pin is for the readers below, which a caller reaches with a slice.
+    func testFixedFieldsAtAnyOffset() throws {
+        struct Mixed: Codable {
+            var a: Int32?
+            var f: Float?
+            var d: Double?
+            enum CodingKeys: Int, CodingKey { case a = 1, f = 2, d = 3 }
+        }
+        // a = 1, then f at offset 3 and d at offset 8: neither aligned.
+        let bytes = Data([0x08, 0x01, 0x15, 0x00, 0x00, 0x80, 0x3F, 0x19, 0, 0, 0, 0, 0, 0, 0xF0, 0x3F])
+        let m = try PBDecoder().decode(Mixed.self, from: bytes)
+        XCTAssertEqual(m.a, 1)
+        XCTAssertEqual(m.f, 1.0)
+        XCTAssertEqual(m.d, 1.0)
+    }
+
+    func testFixedReadsAtAnyOffsetOfASlice() throws {
+        let bytes = Data([0xFF, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(Protowire.consumeFixed32(bytes.dropFirst())?.value, 1)
+        XCTAssertEqual(Protowire.consumeFixed64(bytes.dropFirst(5))?.value, 2)
+    }
+
+    func testSBEHeaderAtAnyOffset() throws {
+        let bytes = Data([0xFF, 8, 0, 1, 0, 2, 0, 3, 0, 0xAA])
+        let header = try XCTUnwrap(SBE.readHeader(bytes.dropFirst()))
+        XCTAssertEqual(header.blockLength, 8)
+        XCTAssertEqual(header.templateID, 1)
+    }
 }

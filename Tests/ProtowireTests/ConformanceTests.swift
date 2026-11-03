@@ -172,6 +172,38 @@ final class ConformanceTests: XCTestCase {
         }
     }
 
+    /// The marshaller: `PXFEncoder` over the bound message, against the
+    /// reference's text, the goldens of testdata/text among them.
+    func testMarshalledText() throws {
+        try run(leg: "text", expectedAtLeast: 200) { r in
+            guard r.decode == "accept", let message = r.message, let want = r.text else { return nil }
+            let annotations = try Self.schema(r.suite)
+            var bound: [PXF.BoundMessage] = []
+            let data = try input(r)
+            if r.input == "pb" {
+                bound = [try PXF.BoundMessage(reading: data, message: message, annotations: annotations)]
+            } else {
+                let decoder = PXFDecoder(annotations: annotations, rootMessage: message)
+                decoder.typeResolver = Resolver(annotations: annotations)
+                guard let doc = try? PXF.Parser(input: data).parseDocument() else { return "did not parse" }
+                if doc.datasets.isEmpty {
+                    guard (try? decoder.decode(Anything.self, from: data)) != nil, let m = decoder.lastBound else { return "did not decode" }
+                    bound = [m]
+                } else {
+                    for dataset in doc.datasets {
+                        guard (try? decoder.decodeRows(Anything.self, of: dataset)) != nil else { return "did not decode" }
+                        bound += decoder.lastBoundRows
+                    }
+                }
+            }
+            let got = try bound.map { message -> String in
+                let encoder = PXFEncoder(annotations: annotations, rootMessage: message.name)
+                return try encoder.encode(PXF.BoundText(message: message, annotations: annotations))
+            }
+            return got == want ? nil : "text differs: got \(got), want \(want)"
+        }
+    }
+
     /// `pxf fmt` without a schema: the same text as `pxf.FormatDocument`.
     func testFormat() throws {
         try run(leg: "format", expectedAtLeast: 120) { r in
