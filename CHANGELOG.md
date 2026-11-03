@@ -11,6 +11,25 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`PXF.Result` reports a keyed entry's key field, and every other nested
+  field, at its real path** ([trendvidia/protowire-go#214](https://github.com/trendvidia/protowire-go/issues/214)).
+  After decoding `kd { alpha {} }`, `isSet("kd[0].name")` is now true. Paths
+  used to lose the message they belong to: that key was recorded as a root
+  field `name`, and `limits { max = 1 }` as `max`, where a caller checking
+  `isSet("name")` got the wrong answer. Paths now follow the Go reference
+  (`limits.max`, `regions[0].name`), and list elements read `kd[0]` instead of
+  `.0`. Any code that matched the old flat paths needs the full path.
+- **A field the document sets is present whatever the Swift type does with
+  it.** A non-optional property, or a field the type does not declare, used to
+  stay absent in `PXF.Result`.
+- **`_null` no longer collects nulls from list elements**, as in the Go
+  reference (trendvidia/protowire-go#170); `allNullFields` still reports them.
+  A null inside a singular message appears in `_null` under its full path. A
+  nested message's own `_null` property is no longer filled with the root's
+  mask.
+
 ## [1.1.0]
 
 ### Fixed

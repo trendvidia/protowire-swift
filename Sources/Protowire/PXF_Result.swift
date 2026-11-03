@@ -3,6 +3,12 @@
 import Foundation
 
 extension PXF {
+    /// Per-field presence from `PXFDecoder.unmarshalFull`. A path names the
+    /// field from the document root the way the Go reference spells it:
+    /// `hostname`, `limits.max`, `regions[0].name`. A keyed entry's name
+    /// counts as setting the key field, so `regions { us {} }` reports
+    /// `regions[0].name` as set. A field the document mentions is present
+    /// whether or not the Swift type declares it.
     public struct Result {
         private var nullFields: Set<String> = []
         private var presentFields: Set<String> = []
@@ -45,6 +51,13 @@ extension PXF {
         /// Returns the paths of all fields explicitly set to null, sorted.
         public var allNullFields: [String] {
             return nullFields.sorted()
+        }
+
+        /// What a `_null` mask holds: a FieldMask names fields, not list
+        /// elements, so a null inside one is recorded in `allNullFields` only
+        /// (trendvidia/protowire-go#170).
+        internal var nullMaskPaths: [String] {
+            return allNullFields.filter { !$0.contains("[") }
         }
 
         /// All paths with a concrete (non-null) value, sorted.

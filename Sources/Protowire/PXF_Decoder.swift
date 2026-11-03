@@ -6,9 +6,25 @@ import SwiftProtobuf
 struct PXFKey: CodingKey {
     var stringValue: String
     var intValue: Int?
+    /// A list element's position, as opposed to a field that happens to be
+    /// spelled like a number.
+    var isIndex = false
     init(stringValue: String) { self.stringValue = stringValue; self.intValue = Int(stringValue) }
     init(intValue: Int) { self.stringValue = "\(intValue)"; self.intValue = intValue }
-    init(index: Int) { self.stringValue = "\(index)"; self.intValue = index }
+    init(index: Int) { self.stringValue = "\(index)"; self.intValue = index; self.isIndex = true }
+}
+
+/// `path` as a `PXF.Result` names it, the Go reference's spelling:
+/// `one.name`, `kd[0].name`.
+func presencePath(_ path: [CodingKey]) -> String {
+    path.reduce(into: "") { out, key in
+        if (key as? PXFKey)?.isIndex == true {
+            out += "[\(key.stringValue)]"
+        } else {
+            if !out.isEmpty { out += "." }
+            out += key.stringValue
+        }
+    }
 }
 
 /// A decoder that deserializes `Decodable` types from PXF format.
@@ -143,6 +159,7 @@ private final class _PXFDecoder: Swift.Decoder {
         self.typeResolver = typeResolver
         self.annotations = annotations
         self.messageName = messageName
+        markEntriesPresent()
     }
 
     /// The schema field behind `key`, when this container has a message.
@@ -163,7 +180,27 @@ private final class _PXFDecoder: Swift.Decoder {
     }
 
     func container<Key>(keyedBy type: Key.Type) -> KeyedDecodingContainer<Key> where Key: CodingKey {
-        return KeyedDecodingContainer(KeyedContainer<Key>(decoder: self))
+        return KeyedDecodingContainer(KeyedContainer<Key>(decoder: self, codingPath: codingPath))
+    }
+
+    /// Presence comes from the document, not from what the Swift type asks
+    /// for: a non-optional property never calls `contains`, and a type may
+    /// not declare the field at all. This is what records an entry name's key
+    /// field, written out by `expandKeyed` (protowire-go#214). Nulls stay with
+    /// `decodeNil`, and a map's `key: value` entries name no field.
+    private func markEntriesPresent() {
+        guard let result else { return }
+        for entry in entries {
+            let name: String
+            if let a = entry as? PXF.Assignment, !(a.value is PXF.NullVal) {
+                name = a.key
+            } else if let b = entry as? PXF.Block {
+                name = b.name
+            } else {
+                continue
+            }
+            result.pointee.markPresent(path: presencePath(codingPath + [PXFKey(stringValue: name)]))
+        }
     }
 
     func unkeyedContainer() throws -> UnkeyedDecodingContainer {
@@ -194,7 +231,7 @@ private final class _PXFDecoder: Swift.Decoder {
             // user's struct (as either [String] or Google_Protobuf_FieldMask).
             if k.stringValue == "_null", codingPath.isEmpty,
                let result = decoder.result?.pointee,
-               !result.allNullFields.isEmpty {
+               !result.nullMaskPaths.isEmpty {
                 return true
             }
             let present = decoder.entries.contains {
@@ -233,8 +270,7 @@ private final class _PXFDecoder: Swift.Decoder {
         }
 
         private func path(for key: Key) -> String {
-            let p = codingPath + [key]
-            return p.map { $0.stringValue }.joined(separator: ".")
+            presencePath(codingPath + [key])
         }
         func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { let v = try getValue(k); if let x = v as? PXF.BoolVal { return x.value } else if let x = v as? PXF.IntVal { return x.raw != "0" } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected bool or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
         func decode(_ t: String.Type, forKey k: Key) throws -> String { let v = try getValue(k); if let x = v as? PXF.StringVal { return x.value } else if let x = v as? PXF.IdentVal { return x.name } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected string or identifier for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
@@ -264,7 +300,7 @@ private final class _PXFDecoder: Swift.Decoder {
             // the user's `_null` field via Mirror and emits `field = null`.
             if k.stringValue == "_null", codingPath.isEmpty,
                let result = decoder.result?.pointee {
-                let paths = result.allNullFields
+                let paths = result.nullMaskPaths
                 if T.self == [String].self { return paths as! T }
                 if String(describing: T.self) == "Google_Protobuf_FieldMask" {
                     var fm = Google_Protobuf_FieldMask()
@@ -367,7 +403,7 @@ private final class _PXFUnkeyedDecoder: Swift.Decoder {
         self.typeResolver = typeResolver
     }
     func container<K>(keyedBy t: K.Type) -> KeyedDecodingContainer<K> { fatalError() }
-    func unkeyedContainer() throws -> UnkeyedDecodingContainer { return UnkeyedContainer(decoder: self) }
+    func unkeyedContainer() throws -> UnkeyedDecodingContainer { return UnkeyedContainer(decoder: self, codingPath: codingPath) }
     func singleValueContainer() throws -> SingleValueDecodingContainer { return self }
 
     struct UnkeyedContainer: UnkeyedDecodingContainer {
@@ -375,34 +411,34 @@ private final class _PXFUnkeyedDecoder: Swift.Decoder {
         var count: Int? { decoder.elements.count }; var isAtEnd: Bool { currentIndex >= decoder.elements.count }; var currentIndex: Int = 0
         mutating func decodeNil() throws -> Bool {
             if decoder.elements[currentIndex] is PXF.NullVal {
-                decoder.result?.pointee.markNull(path: "\(path).\(currentIndex)")
+                decoder.result?.pointee.markNull(path: elementPath)
                 currentIndex += 1
                 return true
             }
             return false
         }
         
-        private var path: String {
-            return codingPath.map { $0.stringValue }.joined(separator: ".")
+        private var elementPath: String {
+            presencePath(codingPath + [PXFKey(index: currentIndex)])
         }
 
-        mutating func decode(_ t: Bool.Type) throws -> Bool { let v = try current() as? PXF.BoolVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return v?.value ?? false }
-        mutating func decode(_ t: String.Type) throws -> String { let v = try current() as? PXF.StringVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return v?.value ?? "" }
-        mutating func decode(_ t: Int.Type) throws -> Int { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Int(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: Int8.Type) throws -> Int8 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Int8(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: Int16.Type) throws -> Int16 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Int16(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: Int32.Type) throws -> Int32 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Int32(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: Int64.Type) throws -> Int64 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Int64(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: UInt.Type) throws -> UInt { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return UInt(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: UInt8.Type) throws -> UInt8 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return UInt8(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: UInt16.Type) throws -> UInt16 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return UInt16(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: UInt32.Type) throws -> UInt32 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return UInt32(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: UInt64.Type) throws -> UInt64 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return UInt64(v?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: Float.Type) throws -> Float { let v = try current(); decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Float((v as? PXF.FloatVal)?.raw ?? (v as? PXF.IntVal)?.raw ?? "0") ?? 0 }
-        mutating func decode(_ t: Double.Type) throws -> Double { let v = try current(); decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)"); currentIndex += 1; return Double((v as? PXF.FloatVal)?.raw ?? (v as? PXF.IntVal)?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Bool.Type) throws -> Bool { let v = try current() as? PXF.BoolVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return v?.value ?? false }
+        mutating func decode(_ t: String.Type) throws -> String { let v = try current() as? PXF.StringVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return v?.value ?? "" }
+        mutating func decode(_ t: Int.Type) throws -> Int { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Int(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Int8.Type) throws -> Int8 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Int8(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Int16.Type) throws -> Int16 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Int16(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Int32.Type) throws -> Int32 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Int32(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Int64.Type) throws -> Int64 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Int64(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: UInt.Type) throws -> UInt { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return UInt(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: UInt8.Type) throws -> UInt8 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return UInt8(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: UInt16.Type) throws -> UInt16 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return UInt16(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: UInt32.Type) throws -> UInt32 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return UInt32(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: UInt64.Type) throws -> UInt64 { let v = try current() as? PXF.IntVal; decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return UInt64(v?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Float.Type) throws -> Float { let v = try current(); decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Float((v as? PXF.FloatVal)?.raw ?? (v as? PXF.IntVal)?.raw ?? "0") ?? 0 }
+        mutating func decode(_ t: Double.Type) throws -> Double { let v = try current(); decoder.result?.pointee.markPresent(path: elementPath); currentIndex += 1; return Double((v as? PXF.FloatVal)?.raw ?? (v as? PXF.IntVal)?.raw ?? "0") ?? 0 }
         mutating func decode<T: Decodable>(_ t: T.Type) throws -> T {
             let v = try current()
-            decoder.result?.pointee.markPresent(path: "\(path).\(currentIndex)")
+            decoder.result?.pointee.markPresent(path: elementPath)
             if let b = v as? PXF.BlockVal { currentIndex += 1; return try T(from: _PXFDecoder(entries: b.entries, codingPath: codingPath + [PXFKey(index: currentIndex - 1)], result: decoder.result, typeResolver: decoder.typeResolver)) }
             currentIndex += 1; return try T(from: _PXFSingleValueDecoder(value: v, codingPath: codingPath + [PXFKey(index: currentIndex - 1)]))
         }
