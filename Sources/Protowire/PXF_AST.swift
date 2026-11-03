@@ -195,10 +195,14 @@ extension PXF {
         public var value: Value
         public var leadingComments: [Comment]
         public var trailingComment: String?
+        /// The token the source wrote the key as: `.identifier`, `.string`,
+        /// `.number` or `.bool`. The spelling decides what a key binds to: a
+        /// bare `true` is a bool key, and `"true"` a string one.
+        public var keyKind: TokenKind = .identifier
 
         public static func == (lhs: MapEntry, rhs: MapEntry) -> Bool {
             return lhs.pos.line == rhs.pos.line && lhs.pos.column == rhs.pos.column &&
-                   lhs.key == rhs.key && lhs.value.isEqual(to: rhs.value) &&
+                   lhs.key == rhs.key && lhs.keyKind == rhs.keyKind && lhs.value.isEqual(to: rhs.value) &&
                    lhs.leadingComments == rhs.leadingComments && lhs.trailingComment == rhs.trailingComment
         }
     }
@@ -212,10 +216,17 @@ extension PXF {
         /// True when the source wrote the name as a string literal; see
         /// `Assignment.keyQuoted`.
         public var nameQuoted: Bool = false
+        /// The URL of a `@type = "..."` type entry opening this block (draft
+        /// -01 "Any Blocks"). It is not in `entries`.
+        public var typeURL: String?
+        /// Comments written around the type entry, for the formatter.
+        public var typeEntryLeadingComments: [Comment] = []
+        public var typeEntryTrailingComment: String?
 
         public static func == (lhs: Block, rhs: Block) -> Bool {
             guard lhs.pos.line == rhs.pos.line && lhs.pos.column == rhs.pos.column &&
                   lhs.name == rhs.name && lhs.nameQuoted == rhs.nameQuoted && lhs.leadingComments == rhs.leadingComments &&
+                  lhs.typeURL == rhs.typeURL &&
                   lhs.entries.count == rhs.entries.count else { return false }
             
             for i in 0..<lhs.entries.count {
@@ -302,8 +313,13 @@ extension PXF {
 
     public struct BlockVal: Value, Equatable {
         public var pos: Position
+        /// The URL of a `@type = "..."` type entry opening this block (draft
+        /// -01 "Any Blocks"). It is not in `entries`.
         public var typeURL: String?
         public var entries: [Entry]
+        /// Comments written around the type entry, for the formatter.
+        public var typeEntryLeadingComments: [Comment] = []
+        public var typeEntryTrailingComment: String?
 
         public func isEqual(to other: Value) -> Bool {
             guard let other = other as? BlockVal, self.typeURL == other.typeURL && self.entries.count == other.entries.count else { return false }

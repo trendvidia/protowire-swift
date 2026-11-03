@@ -480,7 +480,7 @@ final class PXFKeyedTests: XCTestCase {
         dec.typeResolver = Resolver()
         // A quoted name is a key here, because the body's type is keyed. The
         // same body is an error when the block names no type this set knows.
-        XCTAssertNoThrow(try dec.decode(Holder.self, from: #"payload = @type p.N { children { "a-b" { } } }"#))
-        XCTAssertThrowsError(try dec.decode(Holder.self, from: #"payload = @type p.Other { children { "a-b" { } } }"#))
+        XCTAssertNoThrow(try dec.decode(Holder.self, from: #"payload = { @type = "p.N" children { "a-b" { } } }"#))
+        XCTAssertThrowsError(try dec.decode(Holder.self, from: #"payload = { @type = "p.Other" children { "a-b" { } } }"#))
     }
 }
