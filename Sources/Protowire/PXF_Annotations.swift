@@ -26,7 +26,9 @@ extension PXF {
     ///
     /// Some schemas have no single meaning, and the draft refuses them
     /// whatever a document contains: both annotations on one field, a default
-    /// no literal can denote, and the oneof rules. Building an `Annotations`
+    /// no literal can denote, the oneof rules, an element named `null`,
+    /// `true` or `false`, an option at a retired extension number, and a
+    /// well-known type's name without its shape. Building an `Annotations`
     /// records them and does not fail; `validateSchema(message:)` reports
     /// them, and `PXFDecoder` calls that before it reads a document.
     ///
@@ -110,10 +112,28 @@ extension PXF {
                 for e in file.enumType { indexEnum(e, prefix: prefix) }
                 for m in file.messageType { index(m, prefix: prefix, file: file) }
             }
+            var annotated: [String: [AnnotationError]] = [:]
             for (fullName, file) in messageFiles.sorted(by: { $0.key < $1.key }) {
                 guard let message = messages[fullName] else { continue }
-                violations[file, default: []] += schemaViolations(of: message, file: file)
+                annotated[file, default: []] += schemaViolations(of: message, file: file)
             }
+            // A file's violations go in the reference's order: by element, and
+            // within one element as its walk appends them, so the first one
+            // thrown is the first one protowire-go reports for that file.
+            var seen: Set<String> = []
+            for file in files where seen.insert(file.name).inserted {
+                let found = (violations[file.name] ?? []) + Self.declarationViolations(of: file)
+                    + (annotated[file.name] ?? []) + Self.retiredViolations(of: file)
+                violations[file.name] = found.isEmpty ? nil : Self.sortedByElement(found)
+            }
+        }
+
+        private static func sortedByElement(_ found: [AnnotationError]) -> [AnnotationError] {
+            found.enumerated().sorted {
+                let (a, b) = ($0.element.element ?? "", $1.element.element ?? "")
+                if a != b { return a.utf8.lexicographicallyPrecedes(b.utf8) }
+                return $0.offset < $1.offset
+            }.map(\.element)
         }
 
         private func schemaViolations(of message: Message, file: String) -> [AnnotationError] {
@@ -312,14 +332,22 @@ extension PXF {
         }
 
         private func throwFirst(inClosureOf fullName: String, where matches: (AnnotationError) -> Bool) throws {
-            guard !violations.isEmpty, let root = messageFiles[fullName] else { return }
+            if let first = closureViolations(of: fullName).first(where: matches) { throw first }
+        }
+
+        /// Every violation in the import closure of the file declaring
+        /// `fullName`, ordered by file path and then by element as
+        /// `ValidateFile` sorts them, so the one `validateSchema` throws is the
+        /// first the reference reports.
+        func closureViolations(of fullName: String) -> [AnnotationError] {
+            guard !violations.isEmpty, let root = messageFiles[fullName] else { return [] }
             var visited: Set<String> = []
             var pending = [root]
             while let file = pending.popLast() {
                 guard visited.insert(file).inserted else { continue }
-                if let first = violations[file]?.first(where: matches) { throw first }
                 pending += imports[file] ?? []
             }
+            return visited.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }.flatMap { violations[$0] ?? [] }
         }
 
         // MARK: - required
@@ -468,6 +496,30 @@ extension PXF {
         case invalidRequiredPlacement(file: String, element: String, spelling: String, detail: String)
         /// Two messages with one fully qualified name.
         case duplicateName(file: String, name: String)
+        /// A message field, oneof or enum value named `null`, `true` or
+        /// `false`, which lexes as the keyword (draft §3.13). `kind` is
+        /// `message field`, `oneof` or `enum value`.
+        case reservedName(file: String, kind: String, element: String, name: String)
+        /// An option at an extension number retired by the move to the
+        /// registered block: the descriptor must be recompiled.
+        case retiredNumber(file: String, element: String, number: Int, detail: String)
+        /// A message with a well-known type's full name and not the fields a
+        /// codec reads on it (draft -01 §wkt-shapes).
+        case wellKnownShape(file: String, element: String, detail: String)
+
+        /// The fully qualified element a schema violation is about, which
+        /// orders a file's violations as the reference sorts them.
+        var element: String? {
+            switch self {
+            case .requiredFieldAbsent, .invalidDefault: return nil
+            case .requiredWithDefault(_, let element), .invalidKeyPlacement(_, let element, _, _),
+                 .invalidDefaultPlacement(_, let element, _, _, _), .invalidRequiredPlacement(_, let element, _, _),
+                 .reservedName(_, _, let element, _), .retiredNumber(_, let element, _, _),
+                 .wellKnownShape(_, let element, _):
+                return element
+            case .duplicateName(_, let name): return name
+            }
+        }
 
         public var description: String {
             switch self {
@@ -488,6 +540,12 @@ extension PXF {
                 return "\(file): field \"\(element)\": invalid \(spelling): \(detail) (draft -01 §annotation-extensions)"
             case .duplicateName(let file, let name):
                 return "\(file): message \"\(name)\" is declared twice"
+            case .reservedName(let file, let kind, let element, let name):
+                return "\(file): \(kind) \"\(element)\" uses PXF-reserved name \"\(name)\" (draft §3.13)"
+            case .retiredNumber(let file, let element, _, let detail):
+                return "\(file): \"\(element)\": \(detail) (STABILITY.md promise 3)"
+            case .wellKnownShape(let file, let element, let detail):
+                return "\(file): message \"\(element)\" redefines a well-known type: \(detail) (draft -01 §wkt-shapes)"
             }
         }
     }
