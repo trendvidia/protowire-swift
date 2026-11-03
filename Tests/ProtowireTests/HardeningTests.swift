@@ -163,9 +163,9 @@ final class HardeningTests: XCTestCase {
         XCTAssertEqual(holder.big_int?.negative, true)
     }
 
-    func testPXFDecimalAndBigFloatLiteralsAreNotSilentlyEmpty() {
-        XCTAssertThrowsError(try PXFDecoder().decode(BigNumHolder.self, from: "decimal = 1.50\n"))
-        XCTAssertThrowsError(try PXFDecoder().decode(BigNumHolder.self, from: "big_float = 1.5\n"))
+    func testPXFDecimalAndBigFloatLiteralsAreNotSilentlyEmpty() throws {
+        XCTAssertEqual(try PXFDecoder().decode(BigNumHolder.self, from: "decimal = 1.50\n").decimal?.scale, 2)
+        XCTAssertEqual(try PXFDecoder().decode(BigNumHolder.self, from: "big_float = 1.5\n").big_float?.prec, 256)
     }
 
     func testSignificantDigitsCountsTheMantissaOnly() {
