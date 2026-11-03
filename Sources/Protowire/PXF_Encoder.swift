@@ -29,9 +29,10 @@ extension Dictionary: _PXFMapValue {
     var pxfEntries: [(key: Any, value: Any)] { map { ($0.key, $0.value) } }
 }
 
-/// An `Any` that opens with a type entry: `pxfTypeURL` is that entry's URL.
-protocol _PXFTypedBody {
-    var pxfTypeURL: String? { get }
+/// A value whose node is already built: an `Any` written as a type entry and
+/// a body, which was rendered and read back to decide that it could be.
+protocol _PXFPrebuilt {
+    var pxfNode: PXFNode { get }
 }
 
 /// What a value writes as. The encoder builds this tree and one function
@@ -46,6 +47,14 @@ indirect enum PXFNode {
     case map([(key: String, node: PXFNode)])
 }
 
+/// Writes an `Encodable` value as PXF text.
+///
+/// A `google.protobuf.Any` is written as whatever its own `encode(to:)` writes,
+/// which for the Any's fields is `type_url` and `value`. The encoder never
+/// unpacks one into a type entry and a body: a reader compares an Any by its
+/// bytes, so a body is allowed only when reading it gives back the stored value
+/// byte for byte (draft -01 § Any Blocks), and a Swift type carries no
+/// descriptor to check that against. Writing every Any raw conforms.
 public final class PXFEncoder {
     public var indent: String = "  "
     public var emitDefaults: Bool = false
@@ -115,6 +124,11 @@ public final class PXFEncoder {
         var renderer = PXFRenderer(indent: indent, emitDefaults: emitDefaults, annotations: annotations)
         return renderer.document(node, message: rootMessage.flatMap { annotations?.message($0) })
     }
+
+    /// The node `value` writes as, for a caller that renders it itself.
+    static func node<T: Encodable>(_ value: T) throws -> PXFNode {
+        try _PXFEncoder.node(for: value, codingPath: [])
+    }
 }
 
 /// The `_null` paths a value carries: a `[String]`, or a FieldMask's `paths`.
@@ -176,6 +190,7 @@ private final class _PXFEncoder: Swift.Encoder {
     /// any type gets to run its own `encode(to:)`.
     static func node<T: Encodable>(for value: T, codingPath: [CodingKey]) throws -> PXFNode {
         switch value {
+        case let v as _PXFPrebuilt: return v.pxfNode
         case let v as _PXFLiteral: return .literal(try v.pxfLiteral)
         case let v as String: return .string(v)
         case let v as Bool: return .literal(v ? "true" : "false")
@@ -224,7 +239,7 @@ private final class _PXFEncoder: Swift.Encoder {
         for path in nullPaths(of: value) {
             insertNull(path.split(separator: ".")[...], into: &fields)
         }
-        return .message(fields, typeURL: (value as? _PXFTypedBody)?.pxfTypeURL ?? inner)
+        return .message(fields, typeURL: inner)
     }
 
     func container<Key>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> where Key: CodingKey {

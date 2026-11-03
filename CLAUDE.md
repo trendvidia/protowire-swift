@@ -122,7 +122,10 @@ record with `conformance/update.sh`.
    turns a value into a `PXFNode`, and `PXFRenderer` writes the text, which is
    where a schema changes the output. `PXF_BoundText.swift` puts a `BoundMessage`
    through the same containers a user's type uses, so the `text` leg of
-   `ConformanceTests` exercises the real encoder.
+   `ConformanceTests` exercises the real encoder. It writes an Any as `@type`
+   and a body only after rendering that body, binding it at its real depth and
+   getting the stored `value` bytes back (#63). Otherwise the Any stays as
+   `type_url` and `value`, which is also all a Codable type can produce.
 
 10. **A literal carries its call's digit cap.** `Hardening.Limits` reaches the
    parser and the PB and SBE decoders directly. The Codable containers don't
