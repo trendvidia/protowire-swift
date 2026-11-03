@@ -27,6 +27,8 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_Annotations.swift`, `PXF_Carrier.swift` — the descriptor index, and both
   spellings of an annotation: bracket options and the 1327 carrier.
 - `PXF_Bind.swift` — the schema-bound pass (design call 8).
+- `PXF_Time.swift` — `Google_Protobuf_Timestamp` / `Duration` as Codable
+  (retroactive conformances): their PXF literals, and the message form for PB.
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
   — SBE primitives + dictionary codec + zero-copy reader.
 - `Envelope.swift` — hand-written `Envelope`/`AppError`/`FieldError`.

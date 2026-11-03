@@ -41,8 +41,21 @@ extension PXF.WellKnown {
         return sign + shown.prefix(point) + "." + shown.dropFirst(point)
     }
 
-    /// `time.Time.Format(time.RFC3339Nano)` in UTC: no trailing zeros.
+    /// `time.Unix(seconds, nanos).UTC().Format(time.RFC3339Nano)`: no
+    /// trailing zeros. As `time.Unix` does, nanos outside [0, 1e9) carry into
+    /// the seconds, and a year outside 0...9999 is written as Go writes it,
+    /// `-0001` or `10000`.
     static func timestampLiteral(seconds: Int64, nanos: Int32) -> String {
+        var seconds = seconds
+        var nanos = Int64(nanos)
+        if nanos < 0 || nanos >= 1_000_000_000 {
+            seconds = seconds &+ nanos / 1_000_000_000
+            nanos %= 1_000_000_000
+            if nanos < 0 {
+                nanos += 1_000_000_000
+                seconds = seconds &- 1
+            }
+        }
         var days = seconds / 86400
         var rest = seconds % 86400
         if rest < 0 {
@@ -60,7 +73,9 @@ extension PXF.WellKnown {
         let month = mp < 10 ? mp + 3 : mp - 9
         let year = yoe + era * 400 + (month <= 2 ? 1 : 0)
         func two(_ n: Int64) -> String { n < 10 ? "0\(n)" : "\(n)" }
-        var out = "\(String(repeating: "0", count: max(0, 4 - String(year).count)))\(year)-\(two(month))-\(two(day))T"
+        let yearDigits = String(year.magnitude)
+        var out = (year < 0 ? "-" : "") + String(repeating: "0", count: max(0, 4 - yearDigits.count)) + yearDigits
+        out += "-\(two(month))-\(two(day))T"
         out += "\(two(rest / 3600)):\(two(rest / 60 % 60)):\(two(rest % 60))"
         if nanos > 0 {
             var digits = String(nanos)

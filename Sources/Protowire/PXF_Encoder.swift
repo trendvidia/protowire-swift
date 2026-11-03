@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 import Foundation
+import SwiftProtobuf
 
 /// The set of fully-qualified type names SwiftProtobuf generates for the
 /// nine standard protobuf wrapper types. Any field whose type matches one of
@@ -192,6 +193,9 @@ private final class _PXFEncoder: Swift.Encoder {
         switch value {
         case let v as _PXFPrebuilt: return v.pxfNode
         case let v as _PXFLiteral: return .literal(try v.pxfLiteral)
+        case let v as Google_Protobuf_Duration:
+            // Past int64 nanoseconds this falls through to the message form.
+            if let text = v.pxfLiteral { return .literal(text) }
         case let v as String: return .string(v)
         case let v as Bool: return .literal(v ? "true" : "false")
         case let v as Double: return .literal(PXF.WellKnown.float(v))
