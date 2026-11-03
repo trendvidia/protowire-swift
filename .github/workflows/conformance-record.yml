@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+
+# Proves Tests/ProtowireTests/testdata/conformance is what protowire-go
+# writes. The comparison itself runs in `swift test`. See conformance/README.md.
+name: conformance-record
+
+on:
+  pull_request:
+    paths:
+      - conformance/**
+      - Tests/ProtowireTests/testdata/conformance/**
+      - .github/workflows/conformance-record.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: protowire-swift
+
+      - name: Choose revisions
+        id: rev
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            python3 -c "import json; print('spec=' + json.load(open('protowire-swift/Tests/ProtowireTests/testdata/conformance/provenance.json'))['protowire'])" >> "$GITHUB_OUTPUT"
+          else
+            echo "spec=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          repository: trendvidia/protowire
+          ref: ${{ steps.rev.outputs.spec }}
+          path: protowire
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: protowire-swift/conformance/refgen/go.mod
+
+      - name: Follow the reference's head
+        if: github.event_name != 'pull_request'
+        working-directory: protowire-swift/conformance/refgen
+        run: GOWORK=off go get github.com/trendvidia/protowire-go@main
+
+      - name: Regenerate
+        run: SPEC_DIR="$PWD/protowire" bash protowire-swift/conformance/update.sh
+
+      - name: Compare
+        working-directory: protowire-swift
+        run: git diff --exit-code --stat -- Tests/ProtowireTests/testdata/conformance

@@ -11,6 +11,14 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`swift test` compares this port with protowire-go over the whole spec
+  corpus** ([#45](https://github.com/trendvidia/protowire-swift/issues/45)):
+  parse verdicts, schema-bound decode verdicts and formatted text, for 250
+  documents. `conformance/README.md` explains the record, the ledger of known
+  disagreements, and how to refresh them.
+
 ### Fixed
 
 - **`PXF.Result` reports a keyed entry's key field, and every other nested
