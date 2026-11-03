@@ -152,7 +152,7 @@ final class PXFKeyedEntryNamePresenceTests: XCTestCase {
         ]
         let dec = PXFDecoder(annotations: PXF.Annotations(files: [base, file]), rootMessage: "keyedname.v1.Holder")
         dec.typeResolver = Resolver()
-        let (_, result) = try dec.unmarshalFull(Holder.self, from: "payload = @type keyedname.v1.Nests { inner { alpha {} } }")
+        let (_, result) = try dec.unmarshalFull(Holder.self, from: #"payload = { @type = "keyedname.v1.Nests" inner { alpha {} } }"#)
         XCTAssertTrue(result.isSet("payload.inner[0].name"), "present: \(result.allSetFields)")
     }
 

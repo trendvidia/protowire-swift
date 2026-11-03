@@ -167,22 +167,19 @@ final class PXFDirectiveTests: XCTestCase {
         }
     }
 
-    func testDataset_dottedColumn_rejected() {
-        XCTAssertThrowsError(try PXF.Parser(string: "@dataset x.Row ( a.b )\n").parseDocument()) { err in
-            XCTAssertTrue("\(err)".contains("dotted column"))
-        }
+    func testDataset_dottedColumn_accepted() throws {
+        let doc = try PXF.Parser(string: "@dataset x.Row ( a.b )\n").parseDocument()
+        XCTAssertEqual(doc.datasets.first?.columns, ["a.b"])
     }
 
-    func testDataset_listCell_rejected() {
-        XCTAssertThrowsError(try PXF.Parser(string: "@dataset x.Row ( a )\n( [1, 2] )\n").parseDocument()) { err in
-            XCTAssertTrue("\(err)".contains("list"))
-        }
+    func testDataset_listCell_accepted() throws {
+        let doc = try PXF.Parser(string: "@dataset x.Row ( a )\n( [1, 2] )\n").parseDocument()
+        XCTAssertTrue(doc.datasets.first?.rows.first?.cells.first??.value is PXF.ListVal)
     }
 
-    func testDataset_blockCell_rejected() {
-        XCTAssertThrowsError(try PXF.Parser(string: "@dataset x.Row ( a )\n( { x = 1 } )\n").parseDocument()) { err in
-            XCTAssertTrue("\(err)".contains("block"))
-        }
+    func testDataset_blockCell_accepted() throws {
+        let doc = try PXF.Parser(string: "@dataset x.Row ( a )\n( { x = 1 } )\n").parseDocument()
+        XCTAssertTrue(doc.datasets.first?.rows.first?.cells.first??.value is PXF.BlockVal)
     }
 
     func testDataset_standalone_rejectsCoexistingAtTypeBefore() {

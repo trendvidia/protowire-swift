@@ -39,12 +39,13 @@ extension PXF {
         case datasetCoexistsWithType(Position)
         /// `@dataset` coexists with top-level field entries (draft §3.4.4).
         case datasetCoexistsWithBodyEntries(Position)
-        /// `@dataset` column path contained a dot (draft §3.4.4).
-        case datasetDottedColumn(Position, String)
+        /// A `@dataset` header breaks a column-path rule (draft §3.4.4). The
+        /// position is the offending column's.
+        case datasetColumn(Position, String)
         /// `@dataset` row had a different number of cells from the column count.
         case datasetArityMismatch(Position, got: Int, expected: Int)
-        /// `@dataset` cell contained a list or block value (draft §3.4.4).
-        case datasetCellRejected(Position, kind: String)
+        /// The lexer refused a token; the string is its diagnostic.
+        case lexical(Position, String)
         /// Expected token at a specific parse position with a fixed error string.
         case directiveExpected(Position, String)
 
@@ -74,12 +75,12 @@ extension PXF {
                 return "[\(pos)] @dataset directive cannot coexist with @type; the @dataset header declares the document's type (draft §3.4.4)"
             case .datasetCoexistsWithBodyEntries(let pos):
                 return "[\(pos)] @dataset directive cannot coexist with top-level field entries; the document's payload is the @dataset rows (draft §3.4.4)"
-            case .datasetDottedColumn(let pos, let name):
-                return "[\(pos)] @dataset column \"\(name)\": dotted column paths are not supported in v1 (draft §3.4.4)"
+            case .datasetColumn(let pos, let message):
+                return "[\(pos)] \(message)"
             case .datasetArityMismatch(let pos, let got, let expected):
                 return "[\(pos)] @dataset row has \(got) cells, expected \(expected) (column count)"
-            case .datasetCellRejected(let pos, let kind):
-                return "[\(pos)] @dataset cells cannot contain \(kind) values in v1 (draft §3.4.4)"
+            case .lexical(let pos, let message):
+                return "[\(pos)] \(message)"
             case .directiveExpected(let pos, let what): return "[\(pos)] \(what)"
             }
         }
@@ -90,6 +91,9 @@ extension PXF {
         private let lexer: Lexer
         private var current: Token
         private var comments: [Comment] = []
+        /// Just past the last significant token consumed: where a value that
+        /// has been parsed ends.
+        private var previousEnd = Position(line: 1, column: 1)
 
         /// Initializes a new `Parser` with the given input data.
         /// - Parameter input: The data to parse.
@@ -106,6 +110,7 @@ extension PXF {
         }
 
         private func advance() {
+            previousEnd = lexer.position
             while true {
                 current = lexer.next()
                 if current.kind == .newline { continue }
@@ -121,6 +126,17 @@ extension PXF {
             let c = comments
             comments = []
             return c
+        }
+
+        /// Removes and returns a pending comment written after the value
+        /// just parsed, on its line. A newline ends every line comment, so
+        /// it can only be the first pending one.
+        private func takeTrailingComment() -> String? {
+            guard let c = comments.first, c.pos.line == previousEnd.line, c.pos.column >= previousEnd.column else {
+                return nil
+            }
+            comments.removeFirst()
+            return c.text
         }
 
         /// Parses the entire input as a PXF document.
@@ -216,7 +232,7 @@ extension PXF {
                     throw ParserError.unmatchedBrace(atPos, "directive @\(name)")
                 }
                 // Validate inner well-formedness by parsing the block.
-                _ = try parseBlockVal(typeURL: nil, depth: 1)
+                _ = try parseBlockVal(depth: 1)
                 body = lexer.input.subdata(in: (open + 1)..<close)
                 endOffset = close + 1
             }
@@ -253,21 +269,23 @@ extension PXF {
                     "@dataset column list must contain at least one field name, got \(current.kind.rawValue)")
             }
             var columns: [String] = []
+            var columnPositions: [Position] = []
             while true {
                 if current.kind != .identifier {
                     throw ParserError.directiveExpected(current.pos,
                         "expected column field name, got \(current.kind.rawValue)")
                 }
-                let colName = current.value
-                if colName.contains(".") {
-                    throw ParserError.datasetDottedColumn(current.pos, colName)
-                }
-                columns.append(colName)
+                // A field name, or a dotted path into a sub-message.
+                columns.append(current.value)
+                columnPositions.append(current.pos)
                 advance()
                 if current.kind == .comma { advance(); continue }
                 if current.kind == .rparen { break }
                 throw ParserError.directiveExpected(current.pos,
                     "expected ',' or ')' in @dataset column list, got \(current.kind.rawValue)")
+            }
+            if let (i, message) = Parser.columnPathError(columns) {
+                throw ParserError.datasetColumn(columnPositions[i], message)
             }
             var endOffset = lexer.pos // past `)`
             advance()
@@ -282,6 +300,28 @@ extension PXF {
             return (DatasetDirective(pos: atPos, type: type, columns: columns,
                                      rows: rows, leadingComments: leading),
                     endOffset)
+        }
+
+        /// The header rules that need no schema: no path has an empty
+        /// segment, none appears twice, and no column is a prefix of another,
+        /// since a row could then set one sub-message twice. Returns the
+        /// first column that breaks one, with the message.
+        static func columnPathError(_ columns: [String]) -> (Int, String)? {
+            func inside(_ prefix: String, _ path: String) -> Bool { path.hasPrefix(prefix + ".") }
+            for (i, c) in columns.enumerated() {
+                if c.hasPrefix(".") || c.hasSuffix(".") || c.contains("..") {
+                    return (i, "@dataset column \"\(c)\": a column path has an empty segment (draft §3.4.4)")
+                }
+                for previous in columns[..<i] {
+                    if previous == c {
+                        return (i, "@dataset column \"\(c)\" appears twice (draft §3.4.4)")
+                    }
+                    if inside(previous, c) || inside(c, previous) {
+                        return (i, "@dataset column \"\(c)\" overlaps column \"\(previous)\": a field and a path inside it cannot both be columns (draft §3.4.4)")
+                    }
+                }
+            }
+            return nil
         }
 
         private func parseDatasetRow(expected: Int) throws -> (DatasetRow, Int) {
@@ -310,10 +350,14 @@ extension PXF {
         private func parseRowCell() throws -> AnyValue? {
             switch current.kind {
             case .comma, .rparen: return nil
-            case .lbracket: throw ParserError.datasetCellRejected(current.pos, kind: "list")
-            case .lbrace: throw ParserError.datasetCellRejected(current.pos, kind: "block")
             default:
+                // Any value is a cell, lists and blocks included. A cell's
+                // entries take pending comments as their own, so set aside
+                // the ones written before the cell.
+                let pending = comments
+                comments = []
                 let v = try parseValue(depth: 0)
+                comments = pending + comments
                 return AnyValue(v)
             }
         }
@@ -393,10 +437,12 @@ extension PXF {
             let state = lexer.save()
             let savedCurrent = current
             let savedCount = comments.count
+            let savedEnd = previousEnd
             advance()
             let peeked = current.kind
             lexer.restore(state)
             current = savedCurrent
+            previousEnd = savedEnd
             if comments.count > savedCount {
                 comments.removeLast(comments.count - savedCount)
             }
@@ -407,7 +453,10 @@ extension PXF {
             let leading = flushComments()
             let pos = current.pos
 
-            guard current.kind == .identifier || current.kind == .string || current.kind == .number else {
+            // map-key = identifier / string / integer / bool. Only the ':'
+            // tail takes an integer or bool key.
+            guard current.kind == .identifier || current.kind == .string || current.kind == .number || current.kind == .bool else {
+                if current.kind == .error { throw ParserError.lexical(pos, current.value) }
                 throw ParserError.expectedIdentifier(pos, got: current.kind)
             }
 
@@ -420,32 +469,40 @@ extension PXF {
                 // `=` denotes a field assignment on a proto message; the key
                 // is an identifier or a string literal (a quoted entry name:
                 // the grammar accepts one everywhere, the schema layer
-                // restricts it to keyed repeated fields). Integer keys are
-                // only valid with `:`.
-                guard keyKind != .number else {
+                // restricts it to keyed repeated fields). Integer and bool
+                // keys are only valid with `:`.
+                guard keyKind != .number, keyKind != .bool else {
                     throw ParserError.fieldAssignmentRequiresIdentifierKey(pos, got: keyKind, key: key)
                 }
                 advance()
                 let val = try parseValue(depth: depth)
-                return Assignment(pos: pos, key: key, value: val, leadingComments: leading, keyQuoted: keyKind == .string)
+                return Assignment(pos: pos, key: key, value: val, leadingComments: leading,
+                                  trailingComment: takeTrailingComment(), keyQuoted: keyKind == .string)
             case .colon:
                 // Map entry. Only allowed inside a '{ ... }' block, never at
                 // document top level.
                 guard allowMapEntry else {
                     throw ParserError.mapEntryNotAllowedAtTopLevel(pos)
                 }
+                // An integer key takes no precision suffix.
+                if keyKind == .number, key.contains("p") {
+                    throw ParserError.directiveExpected(pos, "map key \(key): a key cannot carry a precision suffix")
+                }
                 advance()
                 let val = try parseValue(depth: depth)
-                return MapEntry(pos: pos, key: key, value: val, leadingComments: leading)
+                return MapEntry(pos: pos, key: key, value: val, leadingComments: leading,
+                                trailingComment: takeTrailingComment(), keyKind: keyKind)
             case .lbrace:
                 // `{ ... }` denotes a submessage field; same key rule as `=`.
-                guard keyKind != .number else {
+                guard keyKind != .number, keyKind != .bool else {
                     throw ParserError.submessageBlockRequiresIdentifierKey(pos, got: keyKind, key: key)
                 }
                 advance()
                 try checkDepth(depth + 1)
-                let entries = try parseBody(depth: depth + 1)
-                return Block(pos: pos, name: key, entries: entries, leadingComments: leading, nameQuoted: keyKind == .string)
+                let (entries, type) = try parseBody(depth: depth + 1)
+                return Block(pos: pos, name: key, entries: entries, leadingComments: leading, nameQuoted: keyKind == .string,
+                             typeURL: type.url, typeEntryLeadingComments: type.leadingComments,
+                             typeEntryTrailingComment: type.trailingComment)
             default:
                 throw ParserError.expectedEntryDelimiter(current.pos, got: current.kind)
             }
@@ -459,16 +516,6 @@ extension PXF {
 
         private func parseValue(depth: Int) throws -> Value {
             let pos = current.pos
-
-            var typeURL: String?
-            if current.kind == .atType {
-                advance()
-                if current.kind != .identifier {
-                    throw ParserError.expectedTypeURL(current.pos, got: current.kind)
-                }
-                typeURL = current.value
-                advance()
-            }
 
             switch current.kind {
             case .string:
@@ -488,7 +535,7 @@ extension PXF {
                 advance()
                 return v
             case .bytes:
-                guard let data = Data(base64Encoded: current.value) else {
+                guard let data = Lexer.decodeBase64(current.value) else {
                     throw ParserError.invalidBase64(pos, current.value)
                 }
                 let v = BytesVal(pos: pos, value: data)
@@ -522,7 +569,9 @@ extension PXF {
             case .lbracket:
                 return try parseList(depth: depth + 1)
             case .lbrace:
-                return try parseBlockVal(typeURL: typeURL, depth: depth + 1)
+                return try parseBlockVal(depth: depth + 1)
+            case .error:
+                throw ParserError.lexical(pos, current.value)
             default:
                 throw ParserError.expectedValue(pos, got: current.kind)
             }
@@ -530,6 +579,7 @@ extension PXF {
 
         private func parseList(depth: Int) throws -> Value {
             try checkDepth(depth)
+            let pos = current.pos
             advance() // [
             var elements: [Value] = []
             while current.kind != .rbracket && current.kind != .eof {
@@ -538,24 +588,58 @@ extension PXF {
             }
             if current.kind != .rbracket { throw ParserError.expectedClosingBracket(current.pos, got: current.kind) }
             advance()
-            return ListVal(pos: current.pos, elements: elements)
+            return ListVal(pos: pos, elements: elements)
         }
 
-        private func parseBlockVal(typeURL: String? = nil, depth: Int) throws -> Value {
+        private func parseBlockVal(depth: Int) throws -> Value {
             try checkDepth(depth)
+            let pos = current.pos
             advance() // {
-            let entries = try parseBody(depth: depth)
-            return BlockVal(pos: current.pos, typeURL: typeURL, entries: entries)
+            let (entries, type) = try parseBody(depth: depth)
+            return BlockVal(pos: pos, typeURL: type.url, entries: entries,
+                            typeEntryLeadingComments: type.leadingComments,
+                            typeEntryTrailingComment: type.trailingComment)
         }
 
-        private func parseBody(depth: Int) throws -> [Entry] {
+        /// A block's `@type = "..."` type entry, if it has one.
+        private struct TypeEntry {
+            var url: String?
+            var leadingComments: [Comment] = []
+            var trailingComment: String?
+        }
+
+        private func parseBody(depth: Int) throws -> ([Entry], TypeEntry) {
             var entries: [Entry] = []
+            var type = TypeEntry()
             while current.kind != .rbrace && current.kind != .eof {
+                if current.kind == .atType {
+                    guard entries.isEmpty, type.url == nil else {
+                        throw ParserError.directiveExpected(current.pos, "a type entry must be the first entry of its block (draft -01 \"Any Blocks\")")
+                    }
+                    type = try parseTypeEntry()
+                    continue
+                }
                 entries.append(try parseEntry(depth: depth))
             }
             if current.kind != .rbrace { throw ParserError.expectedClosingBrace(current.pos, got: current.kind) }
             advance()
-            return entries
+            return (entries, type)
+        }
+
+        /// Parses `@type = "<type-url>"`. `.atType` is current on entry.
+        private func parseTypeEntry() throws -> TypeEntry {
+            let leading = flushComments()
+            advance() // @type
+            guard current.kind == .equal else {
+                throw ParserError.directiveExpected(current.pos, "expected '=' after @type, got \(current.kind.rawValue)")
+            }
+            advance()
+            guard current.kind == .string else {
+                throw ParserError.directiveExpected(current.pos, "expected a string type URL after @type =, got \(current.kind.rawValue)")
+            }
+            let url = current.value
+            advance()
+            return TypeEntry(url: url, leadingComments: leading, trailingComment: takeTrailingComment())
         }
 
         /// Parses a Go-style duration string into a `TimeInterval` (seconds).
@@ -617,6 +701,9 @@ extension PXF {
                 }
                 total += n * multiplier
             }
+            // A duration fits a signed 64-bit count of nanoseconds, as Go's
+            // time.ParseDuration requires.
+            if total > 9_223_372_036.854775807 { return nil }
             return sign * total
         }
 

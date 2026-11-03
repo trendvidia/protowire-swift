@@ -83,6 +83,8 @@ public enum PXF {
         /// re-lexing it as PXF.
         internal let input: Data
         internal private(set) var pos: Int = 0
+        /// The line and column the scanner is at.
+        internal var position: Position { Position(line: line, column: col) }
         private var line: Int = 1
         private var col: Int = 1
 
@@ -228,44 +230,67 @@ public enum PXF {
                 break
             }
 
-            if isDigit(ch) || ch == 45 { // 0-9, -
+            if isDigit(ch) || ch == 45 || ch == 43 { // 0-9, -, +
                 return lexNumber(startPos)
             }
             if isIdentifierStart(ch) {
                 return lexIdentifierOrKeyword(startPos)
             }
 
+            return lexIllegalRune(startPos)
+        }
+
+        /// Consumes the character no token can start with and names it, as
+        /// one diagnostic for a multi-byte character rather than one per
+        /// byte. An invalid encoding names its lead byte.
+        private func lexIllegalRune(_ pos: Position) -> Token {
+            let lead = peek()
+            let size = lead < 0x80 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1
+            if self.pos + size <= input.count,
+               let text = String(data: input.subdata(in: self.pos..<(self.pos + size)), encoding: .utf8) {
+                for _ in 0..<size { advance() }
+                return Token(kind: .error, value: "unexpected character '\(text)'", pos: pos)
+            }
             advance()
-            return Token(kind: .error, value: "unexpected character: \(UnicodeScalar(ch))", pos: startPos)
+            return Token(kind: .error, value: "unexpected byte 0x" + String(lead, radix: 16), pos: pos)
+        }
+
+        private func text(_ start: Int, _ end: Int) -> String {
+            String(decoding: input.subdata(in: start..<end), as: UTF8.self)
         }
 
         private func lexLineComment(_ pos: Position) -> Token {
-            var val = ""
+            let start = self.pos
             while self.pos < input.count && peek() != 10 {
-                val.append(Character(UnicodeScalar(advance())))
+                advance()
             }
-            return Token(kind: .comment, value: val, pos: pos)
+            return Token(kind: .comment, value: text(start, self.pos), pos: pos)
         }
 
         private func lexBlockComment(_ pos: Position) -> Token {
-            var val = ""
+            let start = self.pos
             advance() // /
             advance() // *
-            while self.pos < input.count {
+            while self.pos + 1 < input.count {
                 if peek() == 42 && peekAt(1) == 47 { // */
                     advance()
                     advance()
-                    break
+                    return Token(kind: .comment, value: text(start, self.pos), pos: pos)
                 }
-                val.append(Character(UnicodeScalar(advance())))
+                advance()
             }
-            return Token(kind: .comment, value: val, pos: pos)
+            return Token(kind: .error, value: "unterminated block comment", pos: pos)
         }
 
         private func lexString(_ pos: Position) -> Token {
             advance() // "
             var bytes: [UInt8] = []
             while self.pos < input.count {
+                if peek() == 10 {
+                    // A simple string holds no raw line feed (draft -01 §
+                    // String Literals).
+                    return Token(kind: .error, value: #"newline in string literal: write it as \n, or use a """triple-quoted""" string"#, pos: pos)
+                }
                 let ch = advance()
                 if ch == 0x22 { // "
                     guard let val = String(data: Data(bytes), encoding: .utf8) else {
@@ -323,32 +348,73 @@ public enum PXF {
             advance() // "
             advance() // "
             advance() // "
-            var val = ""
-            while self.pos < input.count {
+            let start = self.pos
+            while self.pos + 2 < input.count {
                 if peek() == 34 && peekAt(1) == 34 && peekAt(2) == 34 {
+                    let raw = Array(input.subdata(in: start..<self.pos))
                     advance()
                     advance()
                     advance()
-                    break
+                    return Token(kind: .string, value: Lexer.dedent(raw), pos: pos)
                 }
-                val.append(Character(UnicodeScalar(advance())))
+                advance()
             }
-            return Token(kind: .string, value: val, pos: pos)
+            return Token(kind: .error, value: "unterminated triple-quoted string", pos: pos)
+        }
+
+        /// A triple-quoted body: drops the line feed after the opening
+        /// quotes and, when the closing quotes sit on a line of their own,
+        /// that line, whose indent is stripped from every other line. Works
+        /// on bytes because Swift treats CR LF as one `Character`.
+        private static func dedent(_ raw: [UInt8]) -> String {
+            var body = raw[...]
+            if body.first == 10 { body = body.dropFirst() }
+            var lines = body.split(separator: 10, omittingEmptySubsequences: false)
+            if let last = lines.last,
+               String(decoding: last, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let indent = Array(last)
+                lines.removeLast()
+                lines = lines.map { $0.starts(with: indent) ? $0.dropFirst(indent.count) : $0 }
+            }
+            return String(decoding: Array(lines.joined(separator: [10])), as: UTF8.self)
         }
 
         private func lexBytes(_ pos: Position) -> Token {
             advance() // b
             advance() // "
-            var val = ""
+            let start = self.pos
             while self.pos < input.count {
                 let ch = peek()
                 if ch == 34 { // "
+                    let raw = text(start, self.pos)
                     advance()
-                    break
+                    guard Lexer.decodeBase64(raw) != nil else {
+                        return Token(kind: .error, value: "invalid base64 in bytes literal", pos: pos)
+                    }
+                    return Token(kind: .bytes, value: raw, pos: pos)
                 }
-                val.append(Character(UnicodeScalar(advance())))
+                if ch == 10 {
+                    return Token(kind: .error, value: "unterminated bytes literal", pos: pos)
+                }
+                advance()
             }
-            return Token(kind: .bytes, value: val, pos: pos)
+            return Token(kind: .error, value: "unterminated bytes literal", pos: pos)
+        }
+
+        /// Standard or URL-safe base64, with or without padding (RFC 4648
+        /// § 5, draft §3.7). One literal uses one alphabet.
+        static func decodeBase64(_ raw: String) -> Data? {
+            let urlSafe = raw.contains("-") || raw.contains("_")
+            if urlSafe && (raw.contains("+") || raw.contains("/")) { return nil }
+            let stripped = raw.hasSuffix("==") ? raw.dropLast(2) : raw.hasSuffix("=") ? raw.dropLast(1) : raw[...]
+            if stripped.count != raw.count && raw.count % 4 != 0 { return nil }
+            if stripped.count % 4 == 1 { return nil }
+            var std = String(stripped)
+            if urlSafe {
+                std = std.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            }
+            std += String(repeating: "=", count: (4 - std.count % 4) % 4)
+            return Data(base64Encoded: std)
         }
 
         // MARK: - Escape helpers
@@ -443,9 +509,24 @@ public enum PXF {
         private func lexNumber(_ pos: Position) -> Token {
             let startIdx = self.pos
             var neg = false
-            if peek() == 45 { // -
-                neg = true
+            let sign = peek()
+            if sign == 45 || sign == 43 { // - or +
                 advance()
+                // +inf and -inf are the only signed identifier literals, and
+                // a '+' is valid for nothing else.
+                if hasIdent("inf") {
+                    advance()
+                    advance()
+                    advance()
+                    return Token(kind: .float, value: text(startIdx, self.pos), pos: pos)
+                }
+                if sign == 43 {
+                    return Token(kind: .error, value: #""+" is valid only in "+inf""#, pos: pos)
+                }
+                if !isDigit(peek()) {
+                    return Token(kind: .error, value: #""-" must be followed by a digit or "inf""#, pos: pos)
+                }
+                neg = true
             }
 
             let digitStart = self.pos
@@ -459,18 +540,41 @@ public enum PXF {
                 return lexTimestamp(pos, startIdx)
             }
 
-            // Float
-            if peek() == 46 || peek() == 101 || peek() == 69 { // . or e or E
-                return lexFloat(pos, startIdx)
+            // A fraction needs a digit after the '.'. Floats and durations
+            // both admit one, so it is consumed first and what follows tells
+            // them apart: "1.5ms" is one duration, which is what every
+            // port's marshaller writes for a measured latency.
+            var fraction = false
+            if peek() == 46 && isDigit(peekAt(1)) {
+                fraction = true
+                advance()
+                while self.pos < input.count && isDigit(peek()) {
+                    advance()
+                }
             }
 
-            // Duration
-            if isDurationUnit(peek()) {
+            if atDurationUnit() {
                 return lexDuration(pos, startIdx)
             }
 
-            let val = String(data: input.subdata(in: startIdx..<self.pos), encoding: .utf8) ?? ""
-            return Token(kind: .number, value: val, pos: pos)
+            if fraction || peek() == 46 || peek() == 101 || peek() == 69 { // . or e or E
+                return lexFloat(pos, startIdx)
+            }
+
+            lexPrecision()
+            return Token(kind: .number, value: text(startIdx, self.pos), pos: pos)
+        }
+
+        /// Consumes a number's precision suffix, `p` and one or more digits
+        /// (draft -01 § PXF Annotations), so `IntVal.raw` and `FloatVal.raw`
+        /// keep it. A `p` with no digit after it starts an identifier. Which
+        /// fields may carry a suffix is the decoder's call.
+        private func lexPrecision() {
+            guard peek() == 112, isDigit(peekAt(1)) else { return } // p
+            advance()
+            while self.pos < input.count && isDigit(peek()) {
+                advance()
+            }
         }
 
         private func lexFloat(_ pos: Position, _ start: Int) -> Token {
@@ -489,8 +593,8 @@ public enum PXF {
                     advance()
                 }
             }
-            let val = String(data: input.subdata(in: start..<self.pos), encoding: .utf8) ?? ""
-            return Token(kind: .float, value: val, pos: pos)
+            lexPrecision()
+            return Token(kind: .float, value: text(start, self.pos), pos: pos)
         }
 
         private func lexTimestamp(_ pos: Position, _ start: Int) -> Token {
@@ -504,16 +608,47 @@ public enum PXF {
                 }
                 advance()
             }
-            let val = String(data: input.subdata(in: start..<self.pos), encoding: .utf8) ?? ""
-            return Token(kind: .timestamp, value: val, pos: pos)
+            return Token(kind: .timestamp, value: text(start, self.pos), pos: pos)
         }
 
+        /// A time unit opens here: an ASCII unit letter, or U+00B5 MICRO
+        /// SIGN. U+03BC GREEK SMALL LETTER MU is not in the grammar.
+        private func atDurationUnit() -> Bool {
+            guard self.pos < input.count else { return false }
+            return isDurationUnit(peek()) || atMicroSign()
+        }
+
+        private func atMicroSign() -> Bool {
+            peek() == 0xC2 && peekAt(1) == 0xB5
+        }
+
+        /// The scan is deliberately loose, so that `5min` is one invalid
+        /// duration rather than a duration and an identifier.
         private func lexDuration(_ pos: Position, _ start: Int) -> Token {
-            while self.pos < input.count && (isDigit(peek()) || isLowerAlpha(peek())) {
-                advance()
+            while self.pos < input.count {
+                if isDigit(peek()) || isLowerAlpha(peek()) || (peek() == 46 && isDigit(peekAt(1))) {
+                    advance()
+                } else if atMicroSign() {
+                    advance()
+                    advance()
+                } else {
+                    break
+                }
             }
-            let val = String(data: input.subdata(in: start..<self.pos), encoding: .utf8) ?? ""
-            return Token(kind: .duration, value: val, pos: pos)
+            let raw = text(start, self.pos)
+            guard Parser.parseDuration(raw) != nil else {
+                return Token(kind: .error, value: "invalid duration: \(raw)", pos: pos)
+            }
+            return Token(kind: .duration, value: raw, pos: pos)
+        }
+
+        /// Whether the input here reads exactly `word`, not a prefix of a
+        /// longer identifier. Does not advance.
+        private func hasIdent(_ word: String) -> Bool {
+            let bytes = Array(word.utf8)
+            guard self.pos + bytes.count <= input.count else { return false }
+            for (i, b) in bytes.enumerated() where peekAt(i) != b { return false }
+            return self.pos + bytes.count == input.count || !isIdentifierPart(peekAt(bytes.count))
         }
 
         private func isIdentifierStart(_ ch: UInt8) -> Bool {
