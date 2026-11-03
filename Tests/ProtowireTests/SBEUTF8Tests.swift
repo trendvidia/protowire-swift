@@ -167,4 +167,13 @@ final class SBEUTF8Tests: XCTestCase {
         XCTAssertEqual(Array(tinyFrame[block..<block + 3]), [0, 0, 0])
         XCTAssertEqual(try SBEUnmarshaller().unmarshal(tinyFrame, template: tiny)["text"] as? String, "")
     }
+
+    /// NUL is padding only after the text: one before it, or inside it, is
+    /// text. The view and the unmarshaller read a field the same way.
+    func testLeadingNULIsText() throws {
+        let quote = try XCTUnwrap(try templates()["utf8.v1.Quote"])
+        let frame = quoteFrame([0, 0x41], [], [])
+        XCTAssertEqual(try SBEUnmarshaller().unmarshal(frame, template: quote)["symbol"] as? String, "\u{0}A")
+        XCTAssertEqual(try SBE.View(data: frame, template: quote).string("symbol"), "\u{0}A")
+    }
 }

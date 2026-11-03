@@ -91,12 +91,14 @@ extension SBE {
             return block[block.startIndex + ft.offset] != 0
         }
 
-        /// Returns a string value for a field.
+        /// Returns a string value for a field, without its trailing NUL padding.
+        /// The view does not refuse invalid UTF-8, which reads as `""`; use
+        /// `SBEUnmarshaller` for untrusted input.
         public func string(_ name: String) -> String {
             let ft = getField(name)
             let off = block.startIndex + ft.offset
-            let raw = block.subdata(in: off..<(off + ft.size))
-            return String(data: raw, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
+            let text = SBE.trimmingTrailingNULs(block[off..<(off + ft.size)])
+            return SBE.isValidUTF8(text) ? String(decoding: text, as: UTF8.self) : ""
         }
 
         /// Returns binary data for a field.
