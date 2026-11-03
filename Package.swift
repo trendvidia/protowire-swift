@@ -55,7 +55,10 @@ let package = Package(
         // `"check-decode"` in this file to gate building this product.
         .executableTarget(
             name: "check-decode",
-            dependencies: ["Protowire"],
+            dependencies: [
+                "Protowire",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
             path: "cmd/check-decode",
             swiftSettings: sharedSwiftSettings),
     ],

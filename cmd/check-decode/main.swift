@@ -9,11 +9,17 @@
 //
 // Contract:
 //
-//   check-decode --format <pxf|pb|pb-render|sbe|envelope>
+//   check-decode --format <pxf|pxf-pb|pb|pb-render|sbe|envelope>
 //                --schema <fully.qualified.MessageType>
 //                --proto  <path-to-adversarial.proto>
 //                --input  <path>
 //                [--limit NAME=VALUE]...
+//
+//   pxf-pb decodes the document against --schema and writes the message's PB
+//   bytes on stdout, map entries in key order, for the write gate
+//   (protowire/scripts/cross_write_check.sh). Like the Java, Rust and C++
+//   ports, it reads the descriptor set beside --proto (`<stem>.binpb`, built
+//   with its imports), since nothing here compiles `.proto` text.
 //
 //   --limit sets one HARDENING limit for this run, so the corpus can prove a
 //   64 MiB cap with a small fixture.
@@ -40,7 +46,8 @@
 // wrong field number flips PB expectations.
 
 import Foundation
-import Protowire
+@_spi(Conformance) import Protowire
+import SwiftProtobuf
 
 // MARK: - Hand-mirrored adversarial.proto types
 
@@ -113,7 +120,7 @@ struct BigNumHolder: Codable {
 // MARK: - CLI
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pb|pb-render|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
+    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pxf-pb|pb|pb-render|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
     exit(2)
 }
 
@@ -169,10 +176,6 @@ while i < args.count {
 guard let format = format, !format.isEmpty else { usage() }
 guard let schema = schema, !schema.isEmpty else { usage() }
 guard let inputPath = inputPath, !inputPath.isEmpty else { usage() }
-
-// Suppress "unused" warning under -warnings-as-errors when the only consumer
-// is the pxf format; protoPath is part of the conformance contract.
-_ = protoPath
 
 let inputURL = URL(fileURLWithPath: inputPath)
 let inputData: Data
@@ -257,6 +260,39 @@ func sbeDecode(_ data: Data, schema: String) throws {
     _ = try dec.unmarshal(data, template: template)
 }
 
+/// A fault of the harness or its arguments, not a verdict on the input: exit 2,
+/// so a missing descriptor can't pass for a rejected document.
+func harnessFault(_ msg: String) -> Never {
+    FileHandle.standardError.write(Data("check-decode: \(msg)\n".utf8))
+    exit(2)
+}
+
+/// The schema `--proto` names, read from the descriptor set beside it.
+func loadAnnotations(protoPath: String?) -> PXF.Annotations {
+    guard let protoPath, !protoPath.isEmpty else { harnessFault("--proto is required for this format") }
+    let setURL = URL(fileURLWithPath: protoPath).deletingPathExtension().appendingPathExtension("binpb")
+    do {
+        let data = try Data(contentsOf: setURL)
+        let set = try Google_Protobuf_FileDescriptorSet(serializedBytes: data, extensions: Pxf_Annotations_Extensions)
+        return PXF.Annotations(descriptorSet: set)
+    } catch {
+        harnessFault("read descriptor set \(setURL.path): \(error)")
+    }
+}
+
+/// pxf-pb: the schema-bound decode, then its bytes. Whatever the decode
+/// refuses is a reject; the bytes are written only once it has accepted.
+func pxfPB(_ data: Data, schema: String) throws -> Data {
+    let annotations = loadAnnotations(protoPath: protoPath)
+    guard annotations.message(schema) != nil else { harnessFault("no message \(schema) in the descriptor set") }
+    struct Anything: Decodable { init(from decoder: Decoder) throws {} }
+    let dec = PXFDecoder(annotations: annotations, rootMessage: schema)
+    dec.limits = limits
+    _ = try dec.decode(Anything.self, from: data)
+    guard let bytes = dec.lastBoundBytes else { harnessFault("the decode accepted but bound nothing") }
+    return bytes
+}
+
 struct RuntimeError: Error, CustomStringConvertible {
     let message: String
     init(_ m: String) { message = m }
@@ -267,6 +303,8 @@ do {
     switch format {
     case "pxf":
         try pxfDecode(inputData, schema: schema)
+    case "pxf-pb":
+        FileHandle.standardOutput.write(try pxfPB(inputData, schema: schema))
     case "pb":
         try pbDecode(inputData, schema: schema)
     case "pb-render":
