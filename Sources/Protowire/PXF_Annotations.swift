@@ -19,10 +19,10 @@ extension PXF {
     ///
     /// Semantics follow the Go reference's `postDecode`
     /// (`protowire-go/encoding/pxf/decode_fast.go`): a field set to `null`
-    /// counts as present; validation and defaults recurse into present,
-    /// non-null *singular* message fields, not into list elements or map
-    /// values; a defaulted field is still reported absent by `PXF.Result`,
-    /// since it was not in the input.
+    /// counts as present; validation and defaults apply in every message
+    /// body, list elements, map values and `Any` bodies included; a defaulted
+    /// field is still reported absent by `PXF.Result`, since it was not in
+    /// the input.
     ///
     /// A field carrying both annotations has no single meaning, so draft -01
     /// ("Required and Default") refuses the schema, whatever a document
@@ -51,6 +51,19 @@ extension PXF {
             public var keyName: String?
             /// For a map field, the message its values are, if they are one.
             public var mapValueMessage: String?
+            /// The oneof this field belongs to; nil for a proto3 `optional`
+            /// field, whose synthetic oneof is not a oneof to a document.
+            public var oneof: String?
+            /// Whether the field can be unset rather than zero: a message, a
+            /// oneof member, a proto3 `optional`, a proto2 optional, or an
+            /// editions field with explicit presence.
+            public var hasPresence: Bool = false
+            /// A proto2 `required`, or editions `LEGACY_REQUIRED`.
+            public var isRequiredLabel: Bool = false
+            /// A repeated scalar written as one length-delimited record.
+            public var isPacked: Bool = false
+            /// For a map field, its entry's key and value fields.
+            public var mapEntryFields: [Field] = []
         }
 
         /// One message: its fields by proto name, in declaration order.
@@ -63,6 +76,8 @@ extension PXF {
         }
 
         private var messages: [String: Message] = [:]
+        /// Enum value names by fully qualified enum name.
+        private var enums: [String: [String: Int32]] = [:]
         /// The file declaring each message.
         private var messageFiles: [String: String] = [:]
         /// Per file, the files it imports.
@@ -83,7 +98,8 @@ extension PXF {
             for file in files {
                 let prefix = file.package.isEmpty ? "" : file.package + "."
                 imports[file.name] = file.dependency
-                for m in file.messageType { index(m, prefix: prefix, file: file.name) }
+                for e in file.enumType { indexEnum(e, prefix: prefix) }
+                for m in file.messageType { index(m, prefix: prefix, file: file) }
             }
             for (fullName, file) in messageFiles.sorted(by: { $0.key < $1.key }) {
                 for field in messages[fullName]?.fields ?? [] {
@@ -99,30 +115,88 @@ extension PXF {
             }
         }
 
-        private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String, file: String) {
+        private mutating func index(_ m: Google_Protobuf_DescriptorProto, prefix: String, file: Google_Protobuf_FileDescriptorProto) {
             let fullName = prefix + m.name
-            messageFiles[fullName] = file
-            let nested = Dictionary(uniqueKeysWithValues: m.nestedType.map { (fullName + "." + $0.name, $0) })
+            messageFiles[fullName] = file.name
+            for e in m.enumType { indexEnum(e, prefix: fullName + ".") }
+            let nested = Dictionary(m.nestedType.map { (fullName + "." + $0.name, $0) }) { first, _ in first }
             var fields: [Field] = []
             for fd in m.field {
-                let typeName = fd.typeName.hasPrefix(".") ? String(fd.typeName.dropFirst()) : (fd.typeName.isEmpty ? nil : fd.typeName)
-                let mapEntry = fd.type == .message ? typeName.flatMap { nested[$0] } : nil
-                let isMap = mapEntry?.options.mapEntry == true
-                let mapValue = isMap ? mapEntry?.field.first { $0.number == 2 } : nil
-                fields.append(Field(
-                    name: fd.name,
-                    number: fd.number,
-                    type: fd.type,
-                    typeName: typeName,
-                    isRepeated: fd.label == .repeated,
-                    isMap: isMap,
-                    required: fd.options.hasPxf_required && fd.options.Pxf_required,
-                    defaultLiteral: fd.options.hasPxf_default ? fd.options.Pxf_default : nil,
-                    keyName: fd.options.hasPxf_key ? fd.options.Pxf_key : nil,
-                    mapValueMessage: mapValue?.type == .message ? mapValue?.typeName.drop { $0 == "." }.description : nil))
+                var field = Self.field(fd, in: m, file: file)
+                let mapEntry = fd.type == .message ? field.typeName.flatMap { nested[$0] } : nil
+                if let mapEntry, mapEntry.options.mapEntry {
+                    field.isMap = true
+                    field.isPacked = false
+                    field.mapEntryFields = mapEntry.field.map { Self.field($0, in: mapEntry, file: file) }
+                    let value = mapEntry.field.first { $0.number == 2 }
+                    field.mapValueMessage = value?.type == .message ? value?.typeName.drop { $0 == "." }.description : nil
+                }
+                fields.append(field)
             }
             messages[fullName] = Message(fullName: fullName, fields: fields)
             for n in m.nestedType { index(n, prefix: fullName + ".", file: file) }
+        }
+
+        private mutating func indexEnum(_ e: Google_Protobuf_EnumDescriptorProto, prefix: String) {
+            enums[prefix + e.name] = Dictionary(e.value.map { ($0.name, $0.number) }) { first, _ in first }
+        }
+
+        private static func field(_ fd: Google_Protobuf_FieldDescriptorProto, in m: Google_Protobuf_DescriptorProto,
+                                  file: Google_Protobuf_FileDescriptorProto) -> Field {
+            let typeName = fd.typeName.hasPrefix(".") ? String(fd.typeName.dropFirst()) : (fd.typeName.isEmpty ? nil : fd.typeName)
+            let isRepeated = fd.label == .repeated
+            let inRealOneof = fd.hasOneofIndex && !fd.proto3Optional
+            let oneofIndex = Int(fd.oneofIndex)
+            let features = (fd.options.hasFeatures ? fd.options.features : nil)
+            let fileFeatures = file.options.hasFeatures ? file.options.features : nil
+
+            let presence: Google_Protobuf_FeatureSet.FieldPresence
+            if file.syntax == "editions" {
+                if let f = features, f.hasFieldPresence { presence = f.fieldPresence }
+                else if let f = fileFeatures, f.hasFieldPresence { presence = f.fieldPresence }
+                else { presence = .explicit }
+            } else if file.syntax == "proto3" {
+                presence = .implicit
+            } else {
+                presence = .explicit
+            }
+            let hasPresence = !isRepeated && (fd.type == .message || fd.type == .group || fd.hasOneofIndex
+                                              || presence != .implicit)
+
+            var isPacked = false
+            if isRepeated, fd.type != .string, fd.type != .bytes, fd.type != .message, fd.type != .group {
+                if fd.options.hasPacked {
+                    isPacked = fd.options.packed
+                } else if file.syntax == "proto3" {
+                    isPacked = true
+                } else if file.syntax == "editions" {
+                    let encoding = features.flatMap { $0.hasRepeatedFieldEncoding ? $0.repeatedFieldEncoding : nil }
+                        ?? fileFeatures.flatMap { $0.hasRepeatedFieldEncoding ? $0.repeatedFieldEncoding : nil }
+                        ?? .packed
+                    isPacked = encoding == .packed
+                }
+            }
+
+            return Field(
+                name: fd.name,
+                number: fd.number,
+                type: fd.type,
+                typeName: typeName,
+                isRepeated: isRepeated,
+                isMap: false,
+                required: fd.options.hasPxf_required && fd.options.Pxf_required,
+                defaultLiteral: fd.options.hasPxf_default ? fd.options.Pxf_default : nil,
+                keyName: fd.options.hasPxf_key ? fd.options.Pxf_key : nil,
+                mapValueMessage: nil,
+                oneof: inRealOneof && oneofIndex < m.oneofDecl.count ? m.oneofDecl[oneofIndex].name : nil,
+                hasPresence: hasPresence,
+                isRequiredLabel: fd.label == .required || presence == .legacyRequired,
+                isPacked: isPacked)
+        }
+
+        /// The value of enum `name` called `value`.
+        func enumNumber(_ name: String?, value: String) -> Int32? {
+            name.flatMap { enums[$0]?[value] }
         }
 
         /// The message named `fullName`, or nil when the descriptor set does
@@ -172,7 +246,8 @@ extension PXF {
 
         /// Rejects the first `(pxf.required)` field of `message` that has no
         /// entry in `entries`, then recurses into present, non-null singular
-        /// message fields, as the Go reference's `postDecode` does.
+        /// message fields. `PXFDecoder` no longer uses this: its schema-bound
+        /// pass also covers list elements, map values and `Any` bodies.
         public func validateRequired(entries: [Entry], message fullName: String, path: String = "") throws {
             guard let message = messages[fullName] else { return }
             for field in message.fields {
