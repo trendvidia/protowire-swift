@@ -45,6 +45,14 @@ lockstep across language ports when the wire format changes.
 
 ### Changed
 
+- **`PXFEncoder` and `PBEncoder` refuse a value nested deeper than
+  `MaxNestingDepth`** ([#62](https://github.com/trendvidia/protowire-swift/issues/62),
+  protowire#502), rather than write output a decoder at the same limit refuses.
+  Depth is counted as that decoder counts it: in PXF every `{` or `[` written is
+  one level, so a map entry or list element holding a message is two; in PB every
+  submessage and map entry is one. Both take a per-call `limits`, as the decoders
+  do, and throw `EncodingError.invalidValue`. A reference cycle now meets the limit
+  instead of overflowing the stack.
 - **A schema the draft refuses now fails every decode**, before the document is
   read ([#38](https://github.com/trendvidia/protowire-swift/issues/38),
   [#39](https://github.com/trendvidia/protowire-swift/issues/39)), anywhere in the
