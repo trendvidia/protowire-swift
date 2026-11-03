@@ -37,11 +37,14 @@ test target. Sources are flat under `Sources/Protowire/`:
 
 ```bash
 swift build                # warning-clean (treats warnings as errors)
-swift test                 # XCTest, ~20 cases
+swift test                 # XCTest, ~300 cases
 buf generate               # regen *.pb.swift files (uses buf.gen.yaml)
 ```
 
-The package keeps `swift-tools-version: 5.10` for broader compatibility;
+The package declares `swift-tools-version: 6.0`, so Swift 6 tools are the
+floor. 5.10 is no longer a goal: `7e3585f` bumped the version and dropped 5.10
+from the CI matrix, and code here may rely on Swift 6 tools (`@retroactive`,
+for one). The language mode stays Swift 5 (`swiftLanguageVersions: [.v5]`).
 `unsafeFlags(["-warnings-as-errors"])` enforces zero warnings (the
 `treatAllWarnings` API requires PackageDescription 6.2+).
 
