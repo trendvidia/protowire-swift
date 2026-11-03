@@ -66,7 +66,7 @@ public final class PXFDecoder {
     /// before one is read: a bad schema fails on every input.
     private func validateSchema() throws {
         guard let annotations, let root = rootMessage else { return }
-        try annotations.validateRequiredDefault(message: root)
+        try annotations.validateSchema(message: root)
     }
 
     /// What the Swift type sees: `entries` with keyed bindings rewritten to
@@ -101,8 +101,7 @@ public final class PXFDecoder {
                        discardUnknown: discardUnknown)
         }
         if let annotations, !dataset.rows.isEmpty {
-            try annotations.validateRequiredDefault(message: dataset.type)
-            try annotations.validateKeyPlacement(message: dataset.type)
+            try annotations.validateSchema(message: dataset.type)
         }
         return try dataset.rows.map { row in
             guard let binder else {

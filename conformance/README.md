@@ -26,7 +26,9 @@ Each leg of `ConformanceTests` compares one thing per document:
 Use the reference's full decode here. The plain `UnmarshalDescriptor` leaves
 `(pxf.required)` and `(pxf.default)` to the caller. refgen refuses to write a
 record in which `annotations/missing-required.pxf` was accepted, so a run that
-skipped the annotations can't pass for a good one.
+skipped the annotations can't pass for a good one. The `annotations-carrier`
+suite runs the same documents against the `@required` / `@default` spelling,
+from the descriptor set the corpus ships compiled.
 
 ## The ledger
 

@@ -100,7 +100,7 @@ final class ConformanceTests: XCTestCase {
     }
 
     func testCorpusIsPresent() throws {
-        XCTAssertEqual(Self.records.count, 250)
+        XCTAssertEqual(Self.records.count, 252)
         for r in Self.records {
             XCTAssertTrue(FileManager.default.fileExists(atPath: Self.root.appendingPathComponent("corpus/\(r.suite)/\(r.file)").path), r.id)
         }
