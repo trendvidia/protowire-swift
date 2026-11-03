@@ -119,6 +119,8 @@ record with `conformance/update.sh`.
    decoder then runs on those entries. It mirrors `decodeFields` and `postDecode`
    in protowire-go. `BoundMessage` stays internal: the Codable bridge remains
    the public API, and the bytes exist so `ConformanceTests` can compare them.
+   `check-decode --format pxf-pb` reads them through
+   `PXFDecoder.lastBoundBytes`, which is `@_spi(Conformance)`, not API.
 
 9. **The encoder builds a tree, and one function renders it.** `PXFEncoder`
    turns a value into a `PXFNode`, and `PXFRenderer` writes the text, which is

@@ -20,8 +20,18 @@ lockstep across language ports when the wire format changes.
   now `Encodable`: `PXFEncoder` writes the literal and `PBEncoder` the message
   fields. A precision suffix on any other field is an error naming the field.
   `Hardening.maxBigFloatExponent` is new.
+- **`check-decode --format pxf-pb`** ([#64](https://github.com/trendvidia/protowire-swift/issues/64)).
+  It writes the PB bytes of a schema-bound PXF decode, for the spec's write gate
+  (`scripts/cross_write_check.sh`), reading the descriptor set beside `--proto`.
+  `PBValuesTableTests` compares `PBEncoder` with the spec's struct-binding table
+  (`testdata/values/values.tsv`); the rows that differ are pinned against #70 and #71.
 ### Fixed
 
+- **`PBEncoder` writes a nil list element or map value as its type's zero value**
+  ([#64](https://github.com/trendvidia/protowire-swift/issues/64)), the empty message
+  for a message type. It used to drop the element, shortening the list, and to write
+  the entry without its value field. **The bytes change** for a list or map of
+  Optionals that holds a nil.
 - **`PXFEncoder` writes what the reference writes**, and `ConformanceTests` now
   compares its text with `pxf.Marshal` over the corpus. Lists were invalid text and
   now round-trip ([#32](https://github.com/trendvidia/protowire-swift/issues/32)). A
