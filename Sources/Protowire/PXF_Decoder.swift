@@ -28,6 +28,11 @@ func presencePath(_ path: [CodingKey]) -> String {
 }
 
 /// A decoder that deserializes `Decodable` types from PXF format.
+///
+/// An absent field reads as zero for a non-optional scalar, string, bytes,
+/// bool, integer-backed enum, list or map property, because `PXFEncoder` and
+/// the reference leave such a zero out. An absent non-optional message, or a
+/// String-backed enum, is still `DecodingError.keyNotFound`.
 public final class PXFDecoder {
     /// An optional type resolver to handle `@type` directives (e.g., for `google.protobuf.Any`).
     public var typeResolver: PXF.TypeResolver?
@@ -349,20 +354,41 @@ private final class _PXFDecoder: Swift.Decoder {
         private func path(for key: Key) -> String {
             presencePath(codingPath + [key])
         }
-        func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { let v = try getValue(k); if let x = v as? PXF.BoolVal { return x.value } else if let x = v as? PXF.IntVal { return x.raw != "0" } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected bool or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
-        func decode(_ t: String.Type, forKey k: Key) throws -> String { let v = try getValue(k); if let x = v as? PXF.StringVal { return x.value } else if let x = v as? PXF.IdentVal { return x.name } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected string or identifier for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
-        func decode(_ t: Int.Type, forKey k: Key) throws -> Int { guard let n = Int(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: Int8.Type, forKey k: Key) throws -> Int8 { guard let n = Int8(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: Int16.Type, forKey k: Key) throws -> Int16 { guard let n = Int16(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: Int32.Type, forKey k: Key) throws -> Int32 { guard let n = Int32(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: Int64.Type, forKey k: Key) throws -> Int64 { return try decodeI64(k) }
-        func decode(_ t: UInt.Type, forKey k: Key) throws -> UInt { guard let n = UInt(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: UInt8.Type, forKey k: Key) throws -> UInt8 { guard let n = UInt8(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: UInt16.Type, forKey k: Key) throws -> UInt16 { guard let n = UInt16(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: UInt32.Type, forKey k: Key) throws -> UInt32 { guard let n = UInt32(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
-        func decode(_ t: UInt64.Type, forKey k: Key) throws -> UInt64 { return try decodeU64(k) }
-        func decode(_ t: Float.Type, forKey k: Key) throws -> Float { let v = try getValue(k); if let raw = PXF.numericLiteral(v), let n = Float(raw) { return n } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected float or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
-        func decode(_ t: Double.Type, forKey k: Key) throws -> Double { let v = try getValue(k); if let raw = PXF.numericLiteral(v), let n = Double(raw) { return n } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected double or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
+
+        /// No entry binds `k`. `PXFEncoder` leaves out a zero in a
+        /// non-optional field, as protowire-go does (#58), so such a field
+        /// reads as zero, as it does in `PBDecoder`.
+        private func absent(_ k: Key) -> Bool { bindings(k).isEmpty }
+
+        /// The zero an absent field of type `t` reads as: a scalar, string,
+        /// bytes, bool, integer-backed enum, list or map. Nil for anything
+        /// else, whose absence stays an error: the encoder always writes a
+        /// non-optional message, and a String-backed enum's zero name is in a
+        /// schema the decoder may not have.
+        private func zero<T: Decodable>(_ t: T.Type, forKey k: Key) -> T? {
+            if T.self == Data.self { return Data() as? T }
+            if T.self == String.self { return "" as? T }
+            if let list = T.self as? _PBArray.Type { return list.init(elements: []) as? T }
+            if let map = T.self as? _PBMap.Type { return map.init(entries: []) as? T }
+            guard T.self is Bool.Type || T.self is any BinaryInteger.Type || T.self is any BinaryFloatingPoint.Type
+                    || T.self is any RawRepresentable.Type else { return nil }
+            let literal = PXF.IntVal(pos: PXF.Position(line: 0, column: 0), raw: "0")
+            return try? T(from: decoder.valueDecoder(literal, path: codingPath + [k]))
+        }
+        func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { if absent(k) { return false }; let v = try getValue(k); if let x = v as? PXF.BoolVal { return x.value } else if let x = v as? PXF.IntVal { return x.raw != "0" } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected bool or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
+        func decode(_ t: String.Type, forKey k: Key) throws -> String { if absent(k) { return "" }; let v = try getValue(k); if let x = v as? PXF.StringVal { return x.value } else if let x = v as? PXF.IdentVal { return x.name } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected string or identifier for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
+        func decode(_ t: Int.Type, forKey k: Key) throws -> Int { if absent(k) { return 0 }; guard let n = Int(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: Int8.Type, forKey k: Key) throws -> Int8 { if absent(k) { return 0 }; guard let n = Int8(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: Int16.Type, forKey k: Key) throws -> Int16 { if absent(k) { return 0 }; guard let n = Int16(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: Int32.Type, forKey k: Key) throws -> Int32 { if absent(k) { return 0 }; guard let n = Int32(exactly: try decodeI64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: Int64.Type, forKey k: Key) throws -> Int64 { if absent(k) { return 0 }; return try decodeI64(k) }
+        func decode(_ t: UInt.Type, forKey k: Key) throws -> UInt { if absent(k) { return 0 }; guard let n = UInt(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: UInt8.Type, forKey k: Key) throws -> UInt8 { if absent(k) { return 0 }; guard let n = UInt8(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: UInt16.Type, forKey k: Key) throws -> UInt16 { if absent(k) { return 0 }; guard let n = UInt16(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: UInt32.Type, forKey k: Key) throws -> UInt32 { if absent(k) { return 0 }; guard let n = UInt32(exactly: try decodeU64(k)) else { throw outOfRange(t, k) }; return n }
+        func decode(_ t: UInt64.Type, forKey k: Key) throws -> UInt64 { if absent(k) { return 0 }; return try decodeU64(k) }
+        func decode(_ t: Float.Type, forKey k: Key) throws -> Float { if absent(k) { return 0 }; let v = try getValue(k); if let raw = PXF.numericLiteral(v), let n = Float(raw) { return n } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected float or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
+        func decode(_ t: Double.Type, forKey k: Key) throws -> Double { if absent(k) { return 0 }; let v = try getValue(k); if let raw = PXF.numericLiteral(v), let n = Double(raw) { return n } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected double or int for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
 
         private func outOfRange(_ t: Any.Type, _ k: Key) -> DecodingError {
             .dataCorrupted(.init(codingPath: codingPath + [k], debugDescription: "value of '\(k.stringValue)' is out of range for \(t)"))
@@ -371,6 +397,10 @@ private final class _PXFDecoder: Swift.Decoder {
         private func decodeU64(_ k: Key) throws -> UInt64 { let v = try getValue(k); if let x = v as? PXF.IntVal, let n = UInt64(x.raw) { return n } else { throw DecodingError.typeMismatch(UInt64.self, .init(codingPath: codingPath + [k], debugDescription: "Expected unsigned integer for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
 
         func decode<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T {
+            // A synthesized `_null` has no entry either; it is read below.
+            let synthesizedMask = k.stringValue == "_null" && codingPath.isEmpty
+                && decoder.result?.pointee.nullMaskPaths.isEmpty == false
+            if !synthesizedMask, absent(k), let zero = zero(t, forKey: k) { return zero }
             if T.self == Data.self { let v = try getValue(k); if let x = v as? PXF.BytesVal { return x.value as! T } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected bytes (base64) for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
             if T.self == Date.self { let v = try getValue(k); if let x = v as? PXF.TimestampVal { return x.value as! T } else { throw DecodingError.typeMismatch(t, .init(codingPath: codingPath + [k], debugDescription: "Expected timestamp for key '\(k.stringValue)', got \(String(describing: type(of: v)))")) } }
 

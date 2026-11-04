@@ -107,4 +107,29 @@ final class PXFEncoderTests: XCTestCase {
         XCTAssertEqual(PXF.WellKnown.timestampLiteral(seconds: 1, nanos: 500_000_000), "1970-01-01T00:00:01.5Z")
         XCTAssertEqual(PXF.WellKnown.timestampLiteral(seconds: -1, nanos: 0), "1969-12-31T23:59:59Z")
     }
+
+    // MARK: absent fields, read back (#58)
+
+    func testAnAbsentNonOptionalFieldReadsAsZero() throws {
+        enum Level: Int32, Codable { case low = 0, high = 1 }
+        struct T: Codable {
+            var i: Int32; var u: UInt64; var f: Float; var s: String; var b: Bool; var raw: Data
+            var level: Level; var tags: [String]; var labels: [String: Int32]; var opt: Int32?
+        }
+        let v = try PXFDecoder().decode(T.self, from: "")
+        XCTAssertEqual(v.i, 0); XCTAssertEqual(v.u, 0); XCTAssertEqual(v.f, 0); XCTAssertEqual(v.s, "")
+        XCTAssertEqual(v.b, false); XCTAssertEqual(v.raw, Data()); XCTAssertEqual(v.level, .low)
+        XCTAssertEqual(v.tags, []); XCTAssertEqual(v.labels, [:]); XCTAssertNil(v.opt)
+    }
+
+    func testAnAbsentNonOptionalMessageIsStillAnError() {
+        // The encoder always writes a non-optional message, so its absence
+        // is not a zero; nor is a String-backed enum's, whose zero name only
+        // a schema knows.
+        struct WithMessage: Codable { var item: Item }
+        XCTAssertThrowsError(try PXFDecoder().decode(WithMessage.self, from: ""))
+        enum Named: String, Codable { case none = "NONE" }
+        struct WithNamedEnum: Codable { var c: Named }
+        XCTAssertThrowsError(try PXFDecoder().decode(WithNamedEnum.self, from: ""))
+    }
 }
