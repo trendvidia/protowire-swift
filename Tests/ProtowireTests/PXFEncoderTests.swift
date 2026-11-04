@@ -1,7 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 import XCTest
+import SwiftProtobuf
 @testable import Protowire
+
+// The encoder writes a wrapper from its `value` by reflection; the type only
+// needs to be Encodable to sit in a Codable struct.
+extension Google_Protobuf_Int32Value: @retroactive Encodable {
+    public func encode(to encoder: Swift.Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+}
 
 /// What `PXFEncoder` writes for Swift types. ConformanceTests holds the text to
 /// the reference over the corpus; these pin what a Codable type does on top.
@@ -63,7 +73,9 @@ final class PXFEncoderTests: XCTestCase {
         struct One: Codable, Equatable { var a: String?; var b: String? }
         struct T: Codable { var one: One; var _null: [String] }
         let text = try PXFEncoder().encode(T(one: One(a: nil, b: "x"), _null: ["one.a"]))
-        XCTAssertEqual(text, "one {\n  b = \"x\"\n  a = null\n}\n")
+        // A nil Optional now holds its place as a left-out zero (#58), so the
+        // null lands where the field is declared, as pxf.Marshal writes it.
+        XCTAssertEqual(text, "one {\n  a = null\n  b = \"x\"\n}\n")
     }
 
     func testANullPathMakesTheBlocksItNeeds() throws {
@@ -77,6 +89,149 @@ final class PXFEncoderTests: XCTestCase {
         let text = try PXFEncoder().encode(T(one: One(a: nil, b: "x"), _null: ["one.a"]))
         let (decoded, _) = try PXFDecoder().unmarshalFull(T.self, from: text)
         XCTAssertEqual(decoded._null, ["one.a"])
+    }
+
+    // MARK: zero values (#58)
+
+    // The expected strings are pxf.Marshal's output, from a throwaway test in
+    // protowire-go at c13c69b6e1a5 over this schema:
+    //
+    //   enum Color { COLOR_UNSPECIFIED = 0; RED = 1; }
+    //   message Inner { int32 n = 1; }
+    //   message M {
+    //     int32 i32 = 1; int64 i64 = 2; uint32 u32 = 3; uint64 u64 = 4;
+    //     float f = 5; double d = 6; bool b = 7; string s = 8; bytes by = 9;
+    //     Color c = 10; repeated int32 list = 11; map<string, int32> m = 12;
+    //     Inner inner = 13; optional int32 opt = 14; google.protobuf.Int32Value w = 15;
+    //   }
+
+    enum Color: String, Codable { case unspecified = "COLOR_UNSPECIFIED", red = "RED" }
+    struct Inner: Codable { var n: Int32 = 0 }
+    struct Zeros: Encodable {
+        var i32: Int32 = 0
+        var i64: Int64 = 0
+        var u32: UInt32 = 0
+        var u64: UInt64 = 0
+        var f: Float = 0
+        var d: Double = 0
+        var b = false
+        var s = ""
+        var by = Data()
+        var c = Color.unspecified
+        var list: [Int32] = []
+        var m: [String: Int32] = [:]
+        var inner: Inner?
+        var opt: Int32?
+        var w: Google_Protobuf_Int32Value?
+    }
+
+    /// The schema above, as far as the renderer reads it: it needs `c` to be
+    /// an enum to write its name bare and to know which name is zero.
+    private static let zerosSchema: PXF.Annotations = {
+        func field(_ name: String, _ number: Int32, _ type: Google_Protobuf_FieldDescriptorProto.TypeEnum,
+                   typeName: String? = nil, repeated: Bool = false) -> Google_Protobuf_FieldDescriptorProto {
+            var f = Google_Protobuf_FieldDescriptorProto()
+            f.name = name
+            f.number = number
+            f.type = type
+            f.label = repeated ? .repeated : .optional
+            if let typeName { f.typeName = "." + typeName }
+            return f
+        }
+        var inner = Google_Protobuf_DescriptorProto()
+        inner.name = "Inner"
+        inner.field = [field("n", 1, .int32)]
+        var m = Google_Protobuf_DescriptorProto()
+        m.name = "M"
+        m.field = [
+            field("i32", 1, .int32), field("i64", 2, .int64), field("u32", 3, .uint32), field("u64", 4, .uint64),
+            field("f", 5, .float), field("d", 6, .double), field("b", 7, .bool), field("s", 8, .string),
+            field("by", 9, .bytes), field("c", 10, .enum, typeName: "z.v1.Color"),
+            field("list", 11, .int32, repeated: true), field("inner", 13, .message, typeName: "z.v1.Inner"),
+            field("opt", 14, .int32),
+        ]
+        var color = Google_Protobuf_EnumDescriptorProto()
+        color.name = "Color"
+        color.value = [("COLOR_UNSPECIFIED", Int32(0)), ("RED", Int32(1))].map { name, number in
+            var v = Google_Protobuf_EnumValueDescriptorProto()
+            v.name = name
+            v.number = number
+            return v
+        }
+        var file = Google_Protobuf_FileDescriptorProto()
+        file.name = "z.proto"
+        file.package = "z.v1"
+        file.messageType = [m, inner]
+        file.enumType = [color]
+        return PXF.Annotations(files: [file])
+    }()
+
+    private func zerosEncoder(emitDefaults: Bool = false) -> PXFEncoder {
+        let e = PXFEncoder(annotations: Self.zerosSchema, rootMessage: "z.v1.M")
+        e.emitDefaults = emitDefaults
+        return e
+    }
+
+    /// Every field at its zero, with `inner` an empty message, `opt` an
+    /// Optional holding 0 and `w` an Int32Value holding 0.
+    private static var setZeros: Zeros {
+        Zeros(inner: Inner(), opt: 0, w: Google_Protobuf_Int32Value())
+    }
+
+    func testAZeroInANonOptionalFieldIsLeftOut() throws {
+        // A set message is written however empty, a set Optional at zero is
+        // written, and a set wrapper holding zero is a set message.
+        XCTAssertEqual(try zerosEncoder().encode(Self.setZeros), "inner {\n}\nopt = 0\nw = 0\n")
+        XCTAssertEqual(try zerosEncoder().encode(Zeros()), "")
+    }
+
+    func testEveryNonZeroFieldIsWritten() throws {
+        var v = Zeros()
+        v.i32 = -1; v.i64 = 2; v.u32 = 3; v.u64 = 4; v.f = 1.5; v.d = 2.5; v.b = true; v.s = "x"
+        v.by = Data([1]); v.c = .red; v.list = [0, 7]; v.m = ["a": 0]; v.inner = Inner(n: 5); v.opt = 9
+        var w = Google_Protobuf_Int32Value()
+        w.value = 6
+        v.w = w
+        // List elements and map values keep their zeros.
+        XCTAssertEqual(try zerosEncoder().encode(v),
+                       "i32 = -1\ni64 = 2\nu32 = 3\nu64 = 4\nf = 1.5\nd = 2.5\nb = true\ns = \"x\"\nby = b\"AQ==\"\n"
+                       + "c = RED\nlist = [\n  0,\n  7\n]\nm = {\n  a: 0\n}\ninner {\n  n = 5\n}\nopt = 9\nw = 6\n")
+    }
+
+    func testANegativeZeroIsWritten() throws {
+        var v = Zeros()
+        v.f = -0.0
+        v.d = -0.0
+        XCTAssertEqual(try zerosEncoder().encode(v), "f = -0\nd = -0\n")
+    }
+
+    func testEmitDefaultsWritesTheZeros() throws {
+        XCTAssertEqual(try zerosEncoder(emitDefaults: true).encode(Self.setZeros),
+                       "i32 = 0\ni64 = 0\nu32 = 0\nu64 = 0\nf = 0\nd = 0\nb = false\ns = \"\"\nby = b\"\"\n"
+                       + "c = COLOR_UNSPECIFIED\nlist = [\n]\nm = {\n}\ninner {\n  n = 0\n}\nopt = 0\nw = 0\n")
+        // A nil Optional scalar is written as its zero, and a nil message is not.
+        XCTAssertEqual(try zerosEncoder(emitDefaults: true).encode(Zeros()),
+                       "i32 = 0\ni64 = 0\nu32 = 0\nu64 = 0\nf = 0\nd = 0\nb = false\ns = \"\"\nby = b\"\"\n"
+                       + "c = COLOR_UNSPECIFIED\nlist = [\n]\nm = {\n}\nopt = 0\n")
+    }
+
+    func testAZeroEnumWithoutASchemaIsLeftOutByItsNumber() throws {
+        enum Level: Int32, Codable { case low = 0, high = 1 }
+        struct T: Codable, Equatable { var level: Level; var other: Int32 }
+        XCTAssertEqual(try PXFEncoder().encode(T(level: .low, other: 1)), "other = 1\n")
+        XCTAssertEqual(try PXFEncoder().encode(T(level: .high, other: 0)), "level = 1\n")
+        try roundTrip(T(level: .low, other: 0))
+    }
+
+    func testAZeroNamedInNullIsWrittenAsNull() throws {
+        struct T: Codable { var a: Int32?; var b: Int32; var _null: [String] }
+        XCTAssertEqual(try PXFEncoder().encode(T(a: nil, b: 0, _null: ["a"])), "a = null\n")
+    }
+
+    func testZerosRoundTrip() throws {
+        struct T: Codable, Equatable { var i: Int32; var s: String; var b: Bool; var d: Double; var raw: Data; var opt: Int32? }
+        try roundTrip(T(i: 0, s: "", b: false, d: 0, raw: Data(), opt: 0))
+        try roundTrip(T(i: 0, s: "", b: false, d: 0, raw: Data(), opt: nil))
     }
 
     // MARK: literals

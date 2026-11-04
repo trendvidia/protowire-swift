@@ -144,6 +144,16 @@ record with `conformance/update.sh`.
    for a big-number type to read. A list's or map's count is checked by the
    parser as it reads, and across bindings by `PXF.checkRepeatedCounts`.
 
+11. **Both encoders leave out a zero, and both decoders read it back.**
+   `PBEncoder` (#14) and `PXFEncoder` (#58) leave out a non-optional field at
+   its zero, as protowire-go does, and write an `Optional` holding a zero:
+   that is how a type marks proto3 `optional`. `PXFEncoder` marks such a field
+   `PXFNode.implicit`, and the renderer drops it at zero unless `emitDefaults`
+   is set. `PBDecoder` and `PXFDecoder` read an absent non-optional field as
+   zero. A `BoundText` item is a struct, so it is never marked: a bound
+   message decides presence itself. The cost: a zero left out reads back as
+   the field's `(pxf.default)` under a schema (protowire-go#259).
+
 ## Open gaps (not yet implemented)
 
 - **Message-typed SBE codec.** `SBE.templates(from:)` builds a

@@ -46,9 +46,34 @@ indirect enum PXFNode {
     case message([(name: String, node: PXFNode)], typeURL: String?)
     case list([PXFNode])
     case map([(key: String, node: PXFNode)])
+    /// A field with implicit presence: a non-optional scalar, string, bytes,
+    /// bool or enum. The renderer leaves it out at its zero value unless
+    /// `emitDefaults` is set, as protowire-go leaves out a field `Has` is
+    /// false for. Lists and maps need no marker: an empty one is always left
+    /// out that way, and a message is always written.
+    case implicit(PXFNode)
 }
 
 /// Writes an `Encodable` value as PXF text.
+///
+/// A field follows proto3 implicit presence, as `pxf.Marshal` does in the
+/// reference: a non-optional scalar, string, bytes, bool, enum, list or map at
+/// its zero value is left out. An `Optional` holding a value is written at zero
+/// too, which is how a type marks a proto3 `optional` field. A non-optional
+/// message is always written, and a nil one is absent, so a wrapper such as
+/// `Google_Protobuf_Int32Value` holding 0 is written. List elements and map
+/// values keep their zeros. A negative zero float is not zero: it is written
+/// as `-0`, as the reference writes it. A field named in `_null` is written as
+/// `null` whatever its value.
+///
+/// `emitDefaults` writes the zeros back, as the reference's `EmitDefaults`
+/// does: every field left out above, an empty list or map, and a nil
+/// `Optional` scalar as its zero. A nil message stays absent.
+///
+/// A zero left out reads back as the field's `(pxf.default)`, not as zero,
+/// under a schema-aware decode: the encoder has no schema to see the default
+/// in. The reference does the same (protowire-go#259; protowire-swift#58).
+/// Declare the field `Optional` to keep the zero.
 ///
 /// A `google.protobuf.Any` is written as whatever its own `encode(to:)` writes,
 /// which for the Any's fields is `type_url` and `value`. The encoder never
@@ -159,6 +184,29 @@ private func nullPaths(of value: Any) -> [String] {
 func pxfNestingError(_ value: Any, level: Int, maxDepth: Int, codingPath: [CodingKey]) -> EncodingError {
     EncodingError.invalidValue(value, .init(codingPath: codingPath,
         debugDescription: "pxf: nesting depth \(level) exceeds MaxNestingDepth=\(maxDepth)"))
+}
+
+/// Whether a field holding `value` has implicit presence: a scalar, string,
+/// bytes, bool or enum, which the renderer leaves out at zero. A message,
+/// list or map is none of these. Neither is a `BoundText` item, which is a
+/// struct: a bound message has already decided which fields to write.
+private func hasImplicitPresence(_ value: Any) -> Bool {
+    switch value {
+    case is String, is Bool, is Data, is any BinaryInteger, is any BinaryFloatingPoint: return true
+    default: return value is any RawRepresentable && Mirror(reflecting: value).displayStyle == .enum
+    }
+}
+
+/// The zero a nil `Optional` of type `t` writes under `emitDefaults`, or nil
+/// for a type that stays absent: a message, list, map or enum.
+private func zeroNode(_ t: Any.Type) -> PXFNode? {
+    switch t {
+    case is String.Type: return .string("")
+    case is Bool.Type: return .literal("false")
+    case is Data.Type: return .literal("b\"\"")
+    case is any BinaryInteger.Type, is any BinaryFloatingPoint.Type: return .literal("0")
+    default: return nil
+    }
 }
 
 /// Writes `field = null` inside the block its path names, making any block on
@@ -301,10 +349,28 @@ private final class _PXFEncoder: Swift.Encoder {
             encoder.fields.append((key.stringValue, node))
         }
 
-        private mutating func addValue<T: Encodable>(_ value: T, _ key: Key) throws {
+        /// Adds `value`. `set` means it is written at zero too, because it
+        /// is what an `Optional` held; an `Optional` encoded explicitly that
+        /// holds a value is set as well.
+        private mutating func addValue<T: Encodable>(_ value: T, _ key: Key, set: Bool = false) throws {
             try encoder.checkMember(value, codingPath: codingPath + [key])
-            add(try _PXFEncoder.node(for: value, codingPath: codingPath + [key],
-                                     level: encoder.level + 1, maxDepth: encoder.maxDepth), key)
+            let node = try _PXFEncoder.node(for: value, codingPath: codingPath + [key],
+                                            level: encoder.level + 1, maxDepth: encoder.maxDepth)
+            let isSet = set || (value as? _PBOptional)?.pbWrapped != nil
+            add(!isSet && hasImplicitPresence(value) ? .implicit(node) : node, key)
+        }
+
+        /// An `Optional` property, which a synthesized `encode(to:)` hands
+        /// over here. A nil scalar is its zero, written only by `emitDefaults`,
+        /// as the reference writes an unset proto3 `optional` field then.
+        private mutating func addIfPresent<T: Encodable>(_ value: T?, _ key: Key) throws {
+            if key.stringValue == "_null" { return } // written from the mask, not as a field
+            if let value {
+                try addValue(value, key, set: true)
+            } else if let zero = zeroNode(T.self) {
+                try encoder.checkMember(value as Any, codingPath: codingPath + [key])
+                add(.implicit(zero), key)
+            }
         }
 
         mutating func encodeNil(forKey key: Key) throws {
@@ -331,6 +397,22 @@ private final class _PXFEncoder: Swift.Encoder {
         mutating func encode(_ value: UInt64, forKey key: Key) throws { try addValue(value, key) }
         mutating func encode(_ value: Float, forKey key: Key) throws { try addValue(value, key) }
         mutating func encode(_ value: Double, forKey key: Key) throws { try addValue(value, key) }
+
+        mutating func encodeIfPresent<T: Encodable>(_ value: T?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Bool?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: String?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Int?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Int8?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Int16?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Int32?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Int64?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: UInt?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: UInt8?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: UInt16?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: UInt32?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: UInt64?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Float?, forKey key: Key) throws { try addIfPresent(value, key) }
+        mutating func encodeIfPresent(_ value: Double?, forKey key: Key) throws { try addIfPresent(value, key) }
 
         mutating func nestedContainer<NestedKey>(keyedBy keyType: NestedKey.Type, forKey key: Key) -> KeyedEncodingContainer<NestedKey> where NestedKey: CodingKey { fatalError() }
         mutating func nestedUnkeyedContainer(forKey key: Key) -> UnkeyedEncodingContainer { fatalError() }
@@ -437,6 +519,12 @@ struct PXFRenderer {
                 try body(inner, typeURL: url, message: messageType(of: field, typeURL: url), level: level + 1)
                 pad(level)
                 out += "}\n"
+            case .implicit(let inner):
+                if !emitDefaults && isZero(inner, field) { continue }
+                pad(level)
+                out += "\(name) = "
+                try write(inner, field: field, level: level)
+                out += "\n"
             case .list(let items):
                 if items.isEmpty {
                     if emitDefaults {
@@ -490,6 +578,8 @@ struct PXFRenderer {
             out += field?.type == .enum ? text : PXFEncoder.quote(text)
         case .null:
             out += "null"
+        case .implicit(let inner):
+            try write(inner, field: field, level: level)
         case .message(let fields, let url):
             out += "{\n"
             try body(fields, typeURL: url, message: messageType(of: field, typeURL: url), level: level + 1)
@@ -529,8 +619,28 @@ struct PXFRenderer {
     }
 
     private static func isEmptyString(_ node: PXFNode) -> Bool {
+        if case .implicit(let inner) = node { return isEmptyString(inner) }
         if case .string(let s) = node { return s.isEmpty }
         return false
+    }
+
+    /// Whether an implicit-presence value is its type's zero, read from the
+    /// text it writes: `0`, `false`, `b""`, `""`, or the name of an enum's
+    /// number 0. Only a scalar, string, bytes, bool or enum is marked
+    /// implicit, so a message's literal (a big number's `0`) never gets here.
+    /// `-0` is not zero, since `Has` is true for it in the reference.
+    private func isZero(_ node: PXFNode, _ field: PXF.Annotations.Field?) -> Bool {
+        switch node {
+        case .literal(let text):
+            return text == "0" || text == "false" || text == "b\"\""
+        case .string(let text):
+            if text.isEmpty { return true }
+            // A Swift enum with a String raw value arrives as its name.
+            guard let field, field.type == .enum else { return false }
+            return annotations?.enumName(field.typeName, number: 0) == text
+        default:
+            return false
+        }
     }
 
     /// Every key present, non-empty and distinct, by bytes: canonically
@@ -547,6 +657,7 @@ struct PXFRenderer {
         guard case .message(let fields, _) = item else { return nil }
         for (name, node) in fields where name == key {
             if case .string(let s) = node { return s }
+            if case .implicit(.string(let s)) = node { return s }
         }
         return nil
     }
