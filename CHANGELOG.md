@@ -25,8 +25,23 @@ lockstep across language ports when the wire format changes.
   (`scripts/cross_write_check.sh`), reading the descriptor set beside `--proto`.
   `PBValuesTableTests` compares `PBEncoder` with the spec's struct-binding table
   (`testdata/values/values.tsv`); the rows that differ are pinned against #70 and #71.
+- **`PXF.BigInt`, `PXF.Decimal` and `PXF.BigFloat`, arbitrary-precision values for
+  a struct field** ([#71](https://github.com/trendvidia/protowire-swift/issues/71)).
+  They are the language values for `pxf.BigInt`, `pxf.Decimal` and `pxf.BigFloat`,
+  with no new dependency. `PBEncoder` writes them in reduced form, as the draft
+  requires of a language value: `1.00` is unscaled 1 with no scale, and a zero field
+  is left out. `PXFEncoder` and `PXFDecoder` use their literals. A Decimal compares
+  by value (`1.00 == 1.0`) and keeps its scale for the literal; a BigFloat compares
+  value, precision and sign. Each converts to and from Swift integers, and a Decimal
+  to and from `Foundation.Decimal`, failing where the value doesn't fit. The
+  generated `Pxf_Decimal` and its siblings are still written as they are. The
+  struct-binding table's big-number rows now match protowire-go.
 ### Fixed
 
+- **A `pxf.Decimal` or `pxf.BigFloat` literal follows the call's limits**, as a
+  `pxf.BigInt` literal did. Read into `Pxf_Decimal` or `Pxf_BigFloat` without a
+  schema, it was bound by the `Hardening` constants, not by a lowered
+  `maxNumericLiteralDigits` or `maxBigFloatExponent`.
 - **`PBEncoder` writes a nil list element or map value as its type's zero value**
   ([#64](https://github.com/trendvidia/protowire-swift/issues/64)), the empty message
   for a message type. It used to drop the element, shortening the list, and to write
