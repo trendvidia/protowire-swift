@@ -265,8 +265,11 @@ extension PXF {
         /// A Swift integer, rounded to `precision` bits. Without one, the
         /// precision is the integer's bit length or 64, whichever is larger,
         /// so the value is exact, as Go's `big.Float.SetInt` chooses.
+        /// Precision 0 holds only zero, so it is a precondition failure for
+        /// any other value.
         public init<T: BinaryInteger>(_ value: T, precision: UInt32? = nil) {
             let m = BigUInt(words: value.magnitude.words)
+            precondition(precision != 0 || m.isZero, "PXF.BigFloat: precision 0 holds only zero")
             self.init(negative: value < 0, mantissa: m, exponent: 0, precision: precision ?? UInt32(max(64, m.bitWidth)))
         }
 
@@ -405,7 +408,7 @@ private func exactInteger<T: FixedWidthInteger>(negative: Bool, magnitude m: Big
 
 extension PXF.Decimal {
     /// The value of a `Foundation.Decimal`, which always fits. Nil for a NaN.
-    public init?(_ value: Foundation.Decimal) {
+    public init?(exactly value: Foundation.Decimal) {
         guard !value.isNaN else { return nil }
         let words = value._mantissa
         let all = [words.0, words.1, words.2, words.3, words.4, words.5, words.6, words.7]
@@ -476,15 +479,20 @@ extension BigUInt {
 
 // MARK: - Codable
 
-// Each type reads and writes its PXF literal as a string for a coder this
-// package does not own (JSON, a property list), and reads the message's
-// fields too, which is the other form a PXF document may use.
+// PXFEncoder writes each type's literal (through _PXFLiteral) and PXFDecoder
+// reads it, under the call's limits, which the literal carries (design call
+// 10); a PXF block naming the message's fields reads too. PBEncoder and
+// PBDecoder use the message. For a coder this package does not own (JSON, a
+// property list), each type writes its PXF literal as a string, and reads
+// that string or the message's fields.
 
-extension PXF.BigInt: Codable, _PBLanguageNumber {
+extension PXF.BigInt: Codable, _PBLanguageNumber, _PXFLiteral {
     var pbOmittedAsField: Bool { isZero }
+    var pxfLiteral: String { get throws { try PXF.boundLiteral("pxf.BigInt", description) } }
 
     public init(from decoder: Decoder) throws {
-        if decoder is _PBLimited {
+        // A PXF literal under the call's digit cap, or the PB message.
+        if decoder is _PXFValueHolder || decoder is _PBLimited {
             self.init(try Pxf_BigInt(from: decoder))
             return
         }
@@ -502,12 +510,17 @@ extension PXF.BigInt: Codable, _PBLanguageNumber {
     }
 }
 
-extension PXF.Decimal: Codable, _PBLanguageNumber {
+extension PXF.Decimal: Codable, _PBLanguageNumber, _PXFLiteral {
     var pbOmittedAsField: Bool { isZero }
+    var pxfLiteral: String { get throws { try PXF.boundLiteral("pxf.Decimal", description) } }
 
     public init(from decoder: Decoder) throws {
         if let pb = decoder as? _PBLimited {
             try self.init(try Pxf_Decimal(from: decoder), limits: pb.limits)
+            return
+        }
+        if let holder = decoder as? _PXFValueHolder {
+            try self.init(try Pxf_Decimal(from: decoder), limits: PXF.literalLimits(holder.value))
             return
         }
         if let text = PXF.stringLiteral(decoder) {
@@ -524,14 +537,19 @@ extension PXF.Decimal: Codable, _PBLanguageNumber {
     }
 }
 
-extension PXF.BigFloat: Codable, _PBLanguageNumber {
+extension PXF.BigFloat: Codable, _PBLanguageNumber, _PXFLiteral {
     /// Only +0 at precision 0 is the empty message; -0 there is
     /// `{negative: true}`, as PXF `-0` reads.
     var pbOmittedAsField: Bool { precision == 0 && !isNegative }
+    var pxfLiteral: String { get throws { try literal } }
 
     public init(from decoder: Decoder) throws {
         if let pb = decoder as? _PBLimited {
             try self.init(try Pxf_BigFloat(from: decoder), limits: pb.limits)
+            return
+        }
+        if let holder = decoder as? _PXFValueHolder {
+            try self.init(try Pxf_BigFloat(from: decoder), limits: PXF.literalLimits(holder.value))
             return
         }
         if let text = PXF.stringLiteral(decoder) {
