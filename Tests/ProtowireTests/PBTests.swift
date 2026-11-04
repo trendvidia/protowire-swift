@@ -215,6 +215,21 @@ final class PBZeroSkippingTests: XCTestCase {
         XCTAssertThrowsError(try PBDecoder().decode(Scalars.self, from: Data([0x10, 0x80, 0x80, 0x80, 0x80, 0x80, 0x20])))
     }
 
+    /// The zigzag primitive covers the whole Int64 range: it trapped on any
+    /// value past ±2^62, whose encoding does not fit an Int64.
+    func testZigZagWholeRange() {
+        let cases: [(Int64, UInt64)] = [
+            (0, 0), (-1, 1), (1, 2), (-2, 3),
+            (Int64(Int32.max), 0xFFFF_FFFE), (Int64(Int32.min), 0xFFFF_FFFF),
+            (1 << 62, 1 << 63), (-(1 << 62) - 1, (1 << 63) + 1),
+            (.max, .max - 1), (.min, .max),
+        ]
+        for (v, z) in cases {
+            XCTAssertEqual(Protowire.encodeZigZag(v), z, "\(v)")
+            XCTAssertEqual(Protowire.decodeZigZag(z), v, "\(z)")
+        }
+    }
+
     func testOutOfRangeFieldNumberThrows() {
         struct Huge: Encodable {
             enum CodingKeys: Int, CodingKey { case a = 0x1_0000_0000 }

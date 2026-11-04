@@ -50,6 +50,9 @@ extension Optional: _PBOptional where Wrapped: Encodable {
 ///
 /// A field's number is its `CodingKey`'s `intValue`, so a type needs Int
 /// CodingKeys. Encoding a key without one throws `EncodingError.invalidValue`.
+///
+/// A signed integer is a plain varint (proto3 `int32` / `int64`). A field of
+/// type `SInt32` or `SInt64` is zigzag-encoded (`sint32` / `sint64`).
 public final class PBEncoder {
     /// The limits for each encode call; only `maxNestingDepth` applies. A
     /// value nested deeper than a decoder at that limit reads is an error,
@@ -153,6 +156,7 @@ private final class _PBEncoder: Encoder {
             }
             switch v {
             case let x as Data: if set || !x.isEmpty { try tag(k, .bytes); Protowire.appendBytes(&encoder.data, x) }
+            case let x as _PBZigZag: if set || !x.pbIsZero { try tag(k, .varint); Protowire.appendVarint(&encoder.data, x.pbZigZag) }
             case let x as String: if set || !x.isEmpty { try string(x, k) }
             case let x as Bool: if set || x { try bool(x, k) }
             case let x as Int: if set || x != 0 { try i64(Int64(x), k) }
@@ -183,7 +187,10 @@ private final class _PBEncoder: Encoder {
                 if m.children.isEmpty { return }
                 if let at = type(of: v) as? _PBArray.Type, isPackable(at.elementType) {
                     let sub = encoder.peer()
-                    for c in m.children { if let e = c.value as? Encodable { try e.encode(to: sub) } }
+                    for c in m.children {
+                        if let z = c.value as? _PBZigZag { Protowire.appendVarint(&sub.data, z.pbZigZag) }
+                        else if let e = c.value as? Encodable { try e.encode(to: sub) }
+                    }
                     try tag(k, .bytes); Protowire.appendBytes(&encoder.data, sub.data); return
                 }
                 for c in m.children { if let e = c.value as? Encodable { try writeElement(e, k) } }
@@ -227,6 +234,7 @@ private final class _PBEncoder: Encoder {
             case is Bool.Type: try bool(false, k)
             case is Int.Type, is Int8.Type, is Int16.Type, is Int32.Type, is Int64.Type: try i64(0, k)
             case is UInt.Type, is UInt8.Type, is UInt16.Type, is UInt32.Type, is UInt64.Type: try u64(0, k)
+            case is SInt32.Type, is SInt64.Type: try u64(0, k) // zigzag(0) is 0
             case is Float.Type: try f32(0, k)
             case is Double.Type: try f64(0, k)
             case let o as _PBOptional.Type: try writeZero(o.pbWrappedType, k)
@@ -417,7 +425,10 @@ private final class _PBDecoder: Decoder, _PBLimited {
         if type is UInt64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (v, n) } }
         if type is Float.Type { if let (v, n) = Protowire.consumeFixed32(data) { return (Float(bitPattern: v), n) } }
         if type is Double.Type { if let (v, n) = Protowire.consumeFixed64(data) { return (Double(bitPattern: v), n) } }
-        
+        // A zigzag varint too wide for sint32 is an error, as for int32.
+        if type is SInt32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (SInt32(try narrow(Int32(exactly: Protowire.decodeZigZag(v)))), n) } }
+        if type is SInt64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (SInt64(Protowire.decodeZigZag(v)), n) } }
+
         if let decType = type as? Decodable.Type {
             if let (bytes, n) = Protowire.consumeBytes(data) {
                 let sub = try _PBDecoder(data: bytes, depth: depth + 1, limits: limits)
@@ -575,5 +586,6 @@ private func isPackable(_ type: Any.Type) -> Bool {
     return type is Int.Type || type is Int8.Type || type is Int16.Type || type is Int32.Type || type is Int64.Type ||
            type is UInt.Type || type is UInt16.Type || type is UInt32.Type || type is UInt64.Type ||
            type is Bool.Type || type is Float.Type || type is Double.Type ||
+           type is SInt32.Type || type is SInt64.Type ||
            "\(type)".contains("Status") // Heuristic for our test enum
 }

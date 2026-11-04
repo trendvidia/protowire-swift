@@ -17,6 +17,8 @@ test target. Sources are flat under `Sources/Protowire/`:
 
 - `Protowire.swift` — wire primitives (varint / zigzag / fixed32-64 / tag).
 - `PB.swift` — Codable-bridged protobuf binary codec.
+- `PB_SInt.swift` — `SInt32` / `SInt64`, the field types that mean `sint32` /
+  `sint64` (zigzag) to the PB codec and a plain integer to every other coder.
 - `PXF.swift` — lexer + `TokenKind` + `TypeResolver` protocol.
 - `PXF_AST.swift` — Document / Entry / Value structs (custom `isEqual(to:)`
   for heterogeneous Value comparison).
@@ -60,7 +62,9 @@ record with `conformance/update.sh`.
 ## Cross-port wire contracts (don't re-derive)
 
 - `pb`: signed-int fields default to proto3 `int32`/`int64` (plain
-  varint). Canonical envelope: 129 bytes (258 hex chars) starting
+  varint). A field typed `SInt32` / `SInt64` is `sint32` / `sint64`
+  (zigzag varint, also when packed and as a map key or value); Go spells it
+  with the `zigzag` tag option. Canonical envelope: 129 bytes (258 hex chars) starting
   `08 92 03 1a 04 de ad be ef 22 76 …`.
 - `pxf` annotations: `(pxf.required)` = 1314, `(pxf.default)` = 1315,
   `(pxf.key)` = 1316. Their definitions live in `proto/pxf/annotations.proto`.
