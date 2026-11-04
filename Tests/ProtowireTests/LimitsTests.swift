@@ -326,6 +326,26 @@ final class LimitsTests: XCTestCase {
         }
     }
 
+    /// A decimal or float literal carries the call's limits as an integer
+    /// one does: the cap is the call's, not the constant (design call 10).
+    func testFloatLiteralsFollowTheCallsLimits() throws {
+        struct Numbers: Decodable {
+            var d: Pxf_Decimal?
+            var f: Pxf_BigFloat?
+        }
+        for doc in ["d = 1.23456", "f = 1.23456"] {
+            XCTAssertNoThrow(try pxf(.init(maxNumericLiteralDigits: 6)).decode(Numbers.self, from: doc), doc)
+            XCTAssertThrowsError(try pxf(.init(maxNumericLiteralDigits: 5)).decode(Numbers.self, from: doc), doc) { err in
+                guard case DecoderError.numericLiteralTooLong(let n, 5) = err else {
+                    return XCTFail("\(doc): expected numericLiteralTooLong, got \(err)")
+                }
+                XCTAssertEqual(n, 6)
+            }
+        }
+        XCTAssertNoThrow(try pxf().decode(Numbers.self, from: "f = 1e30"))
+        XCTAssertThrowsError(try pxf(.init(maxBigFloatExponent: 8)).decode(Numbers.self, from: "f = 1e30"))
+    }
+
     /// The cap is for big-number fields. An `int64` fails on range instead.
     func testDigitCapLeavesFixedWidthFieldsAlone() throws {
         struct Plain: Decodable { var n: Int64 }
@@ -393,12 +413,17 @@ final class LimitsTests: XCTestCase {
         var pxf = Google_Protobuf_FileDescriptorProto()
         pxf.name = "pxf/bignum.proto"
         pxf.package = "pxf"
-        pxf.messageType = [bigFloat]
+        var decimal = Google_Protobuf_DescriptorProto()
+        decimal.name = "Decimal"
+        decimal.field = [field("unscaled", 1, .bytes), field("scale", 2, .int32), field("negative", 3, .bool)]
+        pxf.messageType = [bigFloat, decimal]
         var f = field("rate", 1, .message)
         f.typeName = ".pxf.BigFloat"
+        var d = field("price", 2, .message)
+        d.typeName = ".pxf.Decimal"
         var holder = Google_Protobuf_DescriptorProto()
         holder.name = "Holder"
-        holder.field = [f]
+        holder.field = [f, d]
         var file = Google_Protobuf_FileDescriptorProto()
         file.name = "h.proto"
         file.package = "h.v1"
@@ -411,5 +436,13 @@ final class LimitsTests: XCTestCase {
         XCTAssertNoThrow(try decoder.decode(Anything.self, from: "rate = 1e30"))
         decoder.limits.maxBigFloatExponent = 8
         XCTAssertThrowsError(try decoder.decode(Anything.self, from: "rate = 1e30"))
+        decoder.limits.maxNumericLiteralDigits = 6
+        XCTAssertNoThrow(try decoder.decode(Anything.self, from: "price = 1.23456"))
+        decoder.limits.maxNumericLiteralDigits = 5
+        XCTAssertThrowsError(try decoder.decode(Anything.self, from: "price = 1.23456")) { err in
+            guard case DecoderError.numericLiteralTooLong(6, 5) = err else {
+                return XCTFail("expected numericLiteralTooLong, got \(err)")
+            }
+        }
     }
 }

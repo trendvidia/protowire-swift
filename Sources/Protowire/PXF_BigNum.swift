@@ -58,7 +58,7 @@ extension Pxf_Decimal: Decodable {
                 throw DecodingError.typeMismatch(Pxf_Decimal.self, .init(codingPath: decoder.codingPath,
                     debugDescription: "Expected a number for pxf.Decimal, got \(type(of: holder.value))"))
             }
-            self = try PXF.parseDecimal(raw)
+            self = try PXF.parseDecimal(raw, limits: PXF.literalLimits(holder.value))
             return
         }
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -83,7 +83,7 @@ extension Pxf_BigFloat: Decodable {
                 throw DecodingError.typeMismatch(Pxf_BigFloat.self, .init(codingPath: decoder.codingPath,
                     debugDescription: "Expected a number for pxf.BigFloat, got \(type(of: holder.value))"))
             }
-            self = try PXF.parseBigFloat(raw)
+            self = try PXF.parseBigFloat(raw, limits: PXF.literalLimits(holder.value))
             return
         }
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -235,6 +235,12 @@ extension PXF {
     /// The text of a numeric value, suffix included.
     static func numericLiteral(_ value: Value) -> String? {
         (value as? IntVal)?.raw ?? (value as? FloatVal)?.raw
+    }
+
+    /// The limits a numeric value was parsed under: the decode call's, which
+    /// a big-number type applies to its literal (design call 10).
+    static func literalLimits(_ value: Value) -> Hardening.Limits {
+        (value as? IntVal)?.limits ?? (value as? FloatVal)?.limits ?? Hardening.Limits()
     }
 
     /// A numeric literal's number and the digits of its `p<bits>` suffix.
