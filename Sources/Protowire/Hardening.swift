@@ -111,8 +111,10 @@ public enum DecoderError: Error, CustomStringConvertible {
     case truncatedLengthPrefix(declared: UInt64, remaining: Int)
     /// A length-prefix varint encodes a value that does not fit in `Int` on this platform.
     case lengthPrefixOverflow(UInt64)
-    /// A `string`-typed field contained bytes that are not valid UTF-8.
-    case invalidUTF8
+    /// An SBE `string` field held bytes that are not valid UTF-8. `field` is
+    /// the field's own name, bare as protowire-go gives it, also for a field
+    /// of a composite or of a group entry.
+    case invalidUTF8(field: String)
     /// The input to one decode call is larger than `Limits.maxMessageSize`.
     case messageTooLarge(size: Int, limit: Int)
     /// A PXF `b"…"` literal decodes to more than `Limits.maxBytesLiteralLength`.
@@ -132,8 +134,8 @@ public enum DecoderError: Error, CustomStringConvertible {
             return "length-prefix declares \(d) bytes but only \(r) remain"
         case .lengthPrefixOverflow(let v):
             return "length-prefix value \(v) exceeds platform Int range"
-        case .invalidUTF8:
-            return "invalid UTF-8 in string field"
+        case .invalidUTF8(let field):
+            return "sbe: invalid UTF-8 in string field \(field)"
         case .messageTooLarge(let size, let limit):
             return "input of \(size) bytes exceeds MaxMessageSize=\(limit)"
         case .bytesLiteralTooLong(let decoded, let limit):

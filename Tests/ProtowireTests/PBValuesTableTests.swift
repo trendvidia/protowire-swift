@@ -29,10 +29,10 @@ final class PBValuesTableTests: XCTestCase {
         var v: Int64
         enum CodingKeys: Int, CodingKey { case v = 1 }
     }
-    /// Go tags both fields `zigzag` (sint64, sint32). PBEncoder has no way to
-    /// say so, so this writes them as int64 and int32 (#70).
+    /// Go tags both fields `zigzag` (sint64, sint32), which a Swift type says
+    /// through the field's type (#70).
     struct Zigzag: Encodable {
-        var d: Int64, e: Int32
+        var d: SInt64, e: SInt32
         enum CodingKeys: Int, CodingKey { case d = 1, e }
     }
     struct Packed: Encodable {
@@ -128,8 +128,6 @@ final class PBValuesTableTests: XCTestCase {
     /// issue that tracks it. A pinned row that starts to match fails, so the
     /// fix has to remove it here.
     private let divergences: [String: String] = [
-        // No way to mark a field sint32 / sint64.
-        "Zigzag": "#70",
         // No arbitrary-precision language type: a big number is its generated
         // message, which the draft says is written as it is, scale and all.
         "DecimalOne": "#71",

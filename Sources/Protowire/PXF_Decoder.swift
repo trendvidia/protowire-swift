@@ -607,6 +607,8 @@ extension PXF {
         case is UInt16.Type: guard let n = UInt16(raw) else { throw bad() }; return n
         case is UInt32.Type: guard let n = UInt32(raw) else { throw bad() }; return n
         case is UInt64.Type: guard let n = UInt64(raw) else { throw bad() }; return n
+        case is SInt32.Type: guard let n = Int32(raw) else { throw bad() }; return SInt32(n)
+        case is SInt64.Type: guard let n = Int64(raw) else { throw bad() }; return SInt64(n)
         default: throw bad()
         }
     }
