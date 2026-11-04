@@ -81,10 +81,12 @@ final class SBEUTF8Tests: XCTestCase {
 
     func testStringFieldRejectsInvalidUTF8() throws {
         let quote = try XCTUnwrap(try templates()["utf8.v1.Quote"])
-        let sites: [(String, ([UInt8]) -> Data)] = [
-            ("root field", { self.quoteFrame($0, [], []) }),
-            ("composite field", { self.quoteFrame([], [], $0) }),
-            ("group field", { self.quoteFrame([], [], [], rows: [Array("ok".utf8), $0]) }),
+        // The error names the field bare, as protowire-go does: a composite's
+        // field and a group entry's field come without their parent's name.
+        let sites: [(String, ([UInt8]) -> Data, String)] = [
+            ("root field", { self.quoteFrame($0, [], []) }, "symbol"),
+            ("composite field", { self.quoteFrame([], [], $0) }, "text"),
+            ("group field", { self.quoteFrame([], [], [], rows: [Array("ok".utf8), $0]) }, "tag"),
         ]
         let sequences: [(String, [UInt8])] = [
             ("stray byte", [0x41, 0x42, 0xFF]),
@@ -95,12 +97,14 @@ final class SBEUTF8Tests: XCTestCase {
             ("surrogate", [0xED, 0xA0, 0x80]),
             ("past U+10FFFF", [0xF4, 0x90, 0x80, 0x80]),
         ]
-        for (site, frame) in sites {
+        for (site, frame, field) in sites {
             for (name, bad) in sequences {
                 XCTAssertThrowsError(try SBEUnmarshaller().unmarshal(frame(bad), template: quote), "\(site)/\(name)") { error in
-                    guard case DecoderError.invalidUTF8 = error else {
+                    guard case DecoderError.invalidUTF8(let got) = error else {
                         return XCTFail("\(site)/\(name): \(error)")
                     }
+                    XCTAssertEqual(got, field, "\(site)/\(name)")
+                    XCTAssertEqual("\(error)", "sbe: invalid UTF-8 in string field \(field)", "\(site)/\(name)")
                 }
             }
         }
