@@ -43,13 +43,14 @@ final class PBValuesTableTests: XCTestCase {
         var m: [String: String], z: [String: Int32], k: [Int32: String]
         enum CodingKeys: Int, CodingKey { case m = 1, z, k }
     }
-    /// Go's `*big.Rat` is nullable, so each big number is an Optional here.
+    /// Go's `*big.Rat` is nullable, so each big number is an Optional here,
+    /// and it is the port's language value, as `*big.Rat` is Go's.
     struct Decimal: Encodable {
-        var d: Pxf_Decimal?
+        var d: PXF.Decimal?
         enum CodingKeys: Int, CodingKey { case d = 1 }
     }
     struct Decimals: Encodable {
-        var ds: [Pxf_Decimal?]
+        var ds: [PXF.Decimal?]
         enum CodingKeys: Int, CodingKey { case ds = 1 }
     }
     struct Leaf: Encodable {
@@ -65,35 +66,31 @@ final class PBValuesTableTests: XCTestCase {
         enum CodingKeys: Int, CodingKey { case i = 1, s, b, d, bs, u }
     }
     struct BigNums: Encodable {
-        var i: Pxf_BigInt?, d: Pxf_Decimal?, f: Pxf_BigFloat?
+        var i: PXF.BigInt?, d: PXF.Decimal?, f: PXF.BigFloat?
         enum CodingKeys: Int, CodingKey { case i = 1, d, f }
     }
     struct BigInts: Encodable {
-        var values: [Pxf_BigInt?]
+        var values: [PXF.BigInt?]
         enum CodingKeys: Int, CodingKey { case values = 1 }
     }
     struct BigFloatMap: Encodable {
-        var m: [String: Pxf_BigFloat?]
+        var m: [String: PXF.BigFloat?]
         enum CodingKeys: Int, CodingKey { case m = 1 }
     }
     struct BigFloat: Encodable {
-        var f: Pxf_BigFloat?
+        var f: PXF.BigFloat?
         enum CodingKeys: Int, CodingKey { case f = 1 }
     }
 
     // MARK: - Big numbers from the row's words
 
-    // This port binds a big number to its generated message, so a value is
-    // built the one way the port turns a number into one: its PXF literal
-    // reader, which is what `PXFDecoder` hands a struct field.
+    // Each value is built in Swift, as Go's twin builds its big.Int, big.Rat
+    // or big.Float, not read from PXF text: `5E+2` is 500, a number PXF has
+    // no decimal literal for.
 
-    private func int(_ literal: String) throws -> Pxf_BigInt {
-        var v = Pxf_BigInt()
-        (v.abs, v.negative) = try PXF.parseBigInt(literal, codingPath: [])
-        return v
+    private func dec(_ unscaled: Int, scale: Int) throws -> PXF.Decimal {
+        try PXF.Decimal(unscaled: PXF.BigInt(unscaled), scale: scale)
     }
-    private func dec(_ literal: String) throws -> Pxf_Decimal { try PXF.parseDecimal(literal) }
-    private func float(_ literal: String) throws -> Pxf_BigFloat { try PXF.parseBigFloat(literal) }
 
     /// Each row's twin, keyed by the row's case name.
     private func twins() -> [String: () throws -> Encodable] {
@@ -104,23 +101,26 @@ final class PBValuesTableTests: XCTestCase {
             "Zigzag": { Zigzag(d: -1, e: -2) },
             "Packed": { Packed(xs: [1, 0, -1], ys: [300], bs: [true, false], ds: [1.5], fs: [-2.5]) },
             "ZeroMapEntry": { ZeroMapEntry(m: ["": ""], z: ["zero": 0], k: [0: "v"]) },
-            "Decimal": { Decimal(d: try self.dec("3.1415")) },
-            "DecimalOne": { Decimal(d: try self.dec("1.00")) },
-            "DecimalFiveE2": { Decimal(d: try self.dec("5E+2")) },
-            "DecimalFifteen": { Decimal(d: try self.dec("15.00")) },
-            "DecimalZero": { Decimal(d: try self.dec("0.00")) },
-            "DecimalNegative": { Decimal(d: try self.dec("-1.50")) },
-            "Decimals": { Decimals(ds: [try self.dec("0.00"), try self.dec("1.00"), try self.dec("5E+2")]) },
+            "Decimal": { Decimal(d: try self.dec(31415, scale: 4)) },
+            "DecimalOne": { Decimal(d: try self.dec(100, scale: 2)) },
+            "DecimalFiveE2": { Decimal(d: try self.dec(5, scale: -2)) },
+            "DecimalFifteen": { Decimal(d: try self.dec(1500, scale: 2)) },
+            "DecimalZero": { Decimal(d: try self.dec(0, scale: 2)) },
+            "DecimalNegative": { Decimal(d: try self.dec(-150, scale: 2)) },
+            "Decimals": { Decimals(ds: [try self.dec(0, scale: 2), try self.dec(100, scale: 2), PXF.Decimal(500)]) },
             "Nested": { Nested(s: "x", ls: [Leaf(), Leaf(name: "l", n: -3)], ss: ["", "s"]) },
             "Zeros": { Zeros() },
             "BigNumsNull": { BigNums(i: nil, d: nil, f: nil) },
-            "BigNumsZero": { BigNums(i: try self.int("0"), d: try self.dec("0"), f: Pxf_BigFloat()) },
-            "BigNumsNegative": { BigNums(i: try self.int("-12345678901234567890"), d: try self.dec("-0.5"), f: try self.float("-1.5p53")) },
-            "BigIntsZeroElement": { BigInts(values: [try self.int("0"), try self.int("1")]) },
-            "BigIntsNullElement": { BigInts(values: [try self.int("1"), nil]) },
-            "DecimalsNullElement": { Decimals(ds: [try self.dec("1"), nil]) },
+            "BigNumsZero": { BigNums(i: PXF.BigInt(0), d: PXF.Decimal(0), f: PXF.BigFloat()) },
+            "BigNumsNegative": {
+                BigNums(i: PXF.BigInt(negative: true, magnitude: Data([0xab, 0x54, 0xa9, 0x8c, 0xeb, 0x1f, 0x0a, 0xd2])), // 12345678901234567890
+                        d: try self.dec(-5, scale: 1), f: PXF.BigFloat(-1.5)!)
+            },
+            "BigIntsZeroElement": { BigInts(values: [PXF.BigInt(0), PXF.BigInt(1)]) },
+            "BigIntsNullElement": { BigInts(values: [PXF.BigInt(1), nil]) },
+            "DecimalsNullElement": { Decimals(ds: [PXF.Decimal(1), nil]) },
             "BigFloatMapNullValue": { BigFloatMap(m: ["k": nil]) },
-            "BigFloatPrec64": { BigFloat(f: try self.float("1.5p64")) },
+            "BigFloatPrec64": { BigFloat(f: PXF.BigFloat(1.5, precision: 64)!) },
         ]
     }
 
@@ -130,15 +130,6 @@ final class PBValuesTableTests: XCTestCase {
     private let divergences: [String: String] = [
         // No way to mark a field sint32 / sint64.
         "Zigzag": "#70",
-        // No arbitrary-precision language type: a big number is its generated
-        // message, which the draft says is written as it is, scale and all.
-        "DecimalOne": "#71",
-        "DecimalFiveE2": "#71",
-        "DecimalFifteen": "#71",
-        "DecimalZero": "#71",
-        "DecimalNegative": "#71",
-        "Decimals": "#71",
-        "BigNumsZero": "#71",
     ]
 
     private struct Row { var name: String; var hex: String; var value: String }
