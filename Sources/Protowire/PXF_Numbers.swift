@@ -480,8 +480,14 @@ extension BigUInt {
 // package does not own (JSON, a property list), and reads the message's
 // fields too, which is the other form a PXF document may use.
 
-extension PXF.BigInt: Codable {
+extension PXF.BigInt: Codable, _PBLanguageNumber {
+    var pbOmittedAsField: Bool { isZero }
+
     public init(from decoder: Decoder) throws {
+        if decoder is _PBLimited {
+            self.init(try Pxf_BigInt(from: decoder))
+            return
+        }
         if let text = PXF.stringLiteral(decoder) {
             self = try PXF.BigInt(pxfLiteral: text)
             return
@@ -490,13 +496,20 @@ extension PXF.BigInt: Codable {
     }
 
     public func encode(to encoder: Encoder) throws {
+        if encoder is _PBWriting { return try message.encode(to: encoder) }
         var c = encoder.singleValueContainer()
         try c.encode(description)
     }
 }
 
-extension PXF.Decimal: Codable {
+extension PXF.Decimal: Codable, _PBLanguageNumber {
+    var pbOmittedAsField: Bool { isZero }
+
     public init(from decoder: Decoder) throws {
+        if let pb = decoder as? _PBLimited {
+            try self.init(try Pxf_Decimal(from: decoder), limits: pb.limits)
+            return
+        }
         if let text = PXF.stringLiteral(decoder) {
             self = try PXF.Decimal(pxfLiteral: text)
             return
@@ -505,13 +518,22 @@ extension PXF.Decimal: Codable {
     }
 
     public func encode(to encoder: Encoder) throws {
+        if encoder is _PBWriting { return try message.encode(to: encoder) }
         var c = encoder.singleValueContainer()
         try c.encode(description)
     }
 }
 
-extension PXF.BigFloat: Codable {
+extension PXF.BigFloat: Codable, _PBLanguageNumber {
+    /// Only +0 at precision 0 is the empty message; -0 there is
+    /// `{negative: true}`, as PXF `-0` reads.
+    var pbOmittedAsField: Bool { precision == 0 && !isNegative }
+
     public init(from decoder: Decoder) throws {
+        if let pb = decoder as? _PBLimited {
+            try self.init(try Pxf_BigFloat(from: decoder), limits: pb.limits)
+            return
+        }
         if let text = PXF.stringLiteral(decoder) {
             self = try PXF.BigFloat(pxfLiteral: text)
             return
@@ -520,6 +542,7 @@ extension PXF.BigFloat: Codable {
     }
 
     public func encode(to encoder: Encoder) throws {
+        if encoder is _PBWriting { return try message.encode(to: encoder) }
         var c = encoder.singleValueContainer()
         try c.encode(try literal)
     }
