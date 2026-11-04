@@ -406,25 +406,26 @@ private func exactInteger<T: FixedWidthInteger>(negative: Bool, magnitude m: Big
     return T(truncatingIfNeeded: 0 &- mag)
 }
 
+// Only Foundation.Decimal's public API is used: its underscored storage
+// fields are public on Darwin but internal in swift-foundation on Linux.
+
 extension PXF.Decimal {
     /// The value of a `Foundation.Decimal`, which always fits. Nil for a NaN.
     public init?(exactly value: Foundation.Decimal) {
         guard !value.isNaN else { return nil }
-        let words = value._mantissa
-        let all = [words.0, words.1, words.2, words.3, words.4, words.5, words.6, words.7]
-        var m = BigUInt()
-        for word in all.prefix(Int(value._length)).reversed() {
-            m = m << 16
-            m.multiplyAdd(by: 1, adding: UInt32(word))
-        }
-        self.init(negative: value._isNegative != 0, unscaled: m, scale: -Int(value._exponent))
+        // An integer significand at exponent 0 prints as its digits.
+        let digits = value.magnitude.significand.description
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
+        self.init(negative: value.sign == .minus, unscaled: BigUInt(decimalDigits: digits.utf8), scale: -value.exponent)
     }
 }
 
 extension Foundation.Decimal {
     /// The value of `value`, or nil when a `Foundation.Decimal` cannot hold
-    /// it exactly: its significand is 128 bits (38 digits, and some of 39),
-    /// and its decimal exponent is between -128 and 127.
+    /// it exactly: it has 38 significant digits, and the value's exponent,
+    /// trailing zeros removed, must be between -128 and 127. The result is
+    /// read back and compared, so a value Foundation would round is nil,
+    /// never a different number.
     public init?(exactly value: PXF.Decimal) {
         var (m, s) = value.reducedParts
         if m.isZero {
@@ -440,19 +441,11 @@ extension Foundation.Decimal {
             m = q
             e += 1
         }
-        // An exponent past the range can come back by scaling the significand.
-        while e > 127, m.bitWidth <= 128 {
-            m.multiplyAdd(by: 10, adding: 0)
-            e -= 1
-        }
-        guard e >= -128, e <= 127, m.bitWidth <= 128 else { return nil }
-        var words = [UInt16](repeating: 0, count: 8)
-        for i in 0..<8 {
-            words[i] = UInt16(truncatingIfNeeded: (m >> (16 * i)).limbs.first ?? 0)
-        }
-        let length = (words.lastIndex { $0 != 0 } ?? -1) + 1
-        self.init(_exponent: Int32(e), _length: UInt32(length), _isNegative: value.isNegative ? 1 : 0, _isCompact: 1, _reserved: 0,
-                  _mantissa: (words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]))
+        guard e >= -128, e <= 127, m.bitWidth <= 128,
+              let significand = Foundation.Decimal(string: m.decimalString, locale: Locale(identifier: "en_US_POSIX")) else { return nil }
+        let out = Foundation.Decimal(sign: value.isNegative ? .minus : .plus, exponent: e, significand: significand)
+        guard PXF.Decimal(exactly: out) == value else { return nil }
+        self = out
     }
 }
 

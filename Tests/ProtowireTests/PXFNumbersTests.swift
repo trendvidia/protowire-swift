@@ -277,22 +277,24 @@ final class PXFNumbersTests: XCTestCase {
     func testFoundationDecimal() throws {
         let nines38 = String(repeating: "9", count: 38)
         let max128 = "340282366920938463463374607431768211455" // 2^128 - 1, 39 digits
-        for text in [nines38, "-" + nines38, max128, "0.\(nines38)", "-1.25", "0", "1.00"] {
+        for text in [nines38, "-" + nines38, "0.\(nines38)", "-1.25", "0", "1.00"] {
             let v = try PXF.Decimal(pxfLiteral: text)
             let f = try XCTUnwrap(Foundation.Decimal(exactly: v), text)
             XCTAssertEqual(PXF.Decimal(exactly: f), v, text)
-            if text != max128 { // Foundation's parser stops at 38 digits
-                XCTAssertEqual(f, Foundation.Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), text)
-            }
+            XCTAssertEqual(f, Foundation.Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), text)
+        }
+        // 39 digits that fit 128 bits: exact if Foundation takes them, else nil.
+        if let f = Foundation.Decimal(exactly: try PXF.Decimal(pxfLiteral: max128)) {
+            XCTAssertEqual(PXF.Decimal(exactly: f), try PXF.Decimal(pxfLiteral: max128))
         }
         for text in [String(repeating: "9", count: 39), "340282366920938463463374607431768211456",
                      "1." + String(repeating: "0", count: 128) + "1"] {
             XCTAssertNil(Foundation.Decimal(exactly: try PXF.Decimal(pxfLiteral: text)), text)
         }
-        // An exponent past 127 comes back by scaling the significand.
-        let big = try PXF.Decimal(unscaled: PXF.BigInt(5), scale: -130)
-        let f = try XCTUnwrap(Foundation.Decimal(exactly: big))
-        XCTAssertEqual(PXF.Decimal(exactly: f), big)
+        // The exponent range, trailing zeros moved into the exponent.
+        let top = try PXF.Decimal(unscaled: PXF.BigInt(5), scale: -127)
+        XCTAssertEqual(PXF.Decimal(exactly: try XCTUnwrap(Foundation.Decimal(exactly: top))), top)
+        XCTAssertNil(Foundation.Decimal(exactly: try PXF.Decimal(unscaled: PXF.BigInt(5), scale: -128)))
         XCTAssertNil(PXF.Decimal(exactly: Foundation.Decimal.nan))
         XCTAssertEqual(PXF.Decimal(exactly: Foundation.Decimal(string: "-12.50")!), try dec(-125, 1))
     }
