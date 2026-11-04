@@ -440,9 +440,13 @@ struct PXFRenderer {
             case .list(let items):
                 if items.isEmpty {
                     if emitDefaults {
+                        // `[` and `]` on lines of their own, as the
+                        // reference writes an empty list.
                         try check(level + 1)
                         pad(level)
-                        out += "\(name) = []\n"
+                        out += "\(name) = [\n"
+                        pad(level)
+                        out += "]\n"
                     }
                     continue
                 }
