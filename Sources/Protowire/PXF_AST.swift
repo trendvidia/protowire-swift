@@ -255,9 +255,10 @@ extension PXF {
     }
 
     public struct IntVal: Value, Equatable {
-        /// The digit cap of the decode call this literal was parsed under. A
-        /// big-number field applies it; no other field can use the digits.
-        var maxDigits: Int = Hardening.maxNumericLiteralDigits
+        /// The limits of the decode call this literal was parsed under. A
+        /// big-number field applies them; no other field can use the digits.
+        var limits = Hardening.Limits()
+        var maxDigits: Int { limits.maxNumericLiteralDigits }
         public var pos: Position
         public var raw: String
         public func isEqual(to other: Value) -> Bool { (other as? IntVal) == self }
@@ -265,9 +266,13 @@ extension PXF {
     }
 
     public struct FloatVal: Value, Equatable {
+        /// As `IntVal.limits`: a pxf.Decimal or pxf.BigFloat literal is bound
+        /// by the call's digit cap and exponent bound, not the constants.
+        var limits = Hardening.Limits()
         public var pos: Position
         public var raw: String
         public func isEqual(to other: Value) -> Bool { (other as? FloatVal) == self }
+        public static func == (a: FloatVal, b: FloatVal) -> Bool { a.pos == b.pos && a.raw == b.raw }
     }
 
     public struct BoolVal: Value, Equatable {

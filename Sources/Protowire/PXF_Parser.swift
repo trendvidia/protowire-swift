@@ -536,11 +536,12 @@ extension PXF {
                 return v
             case .number:
                 var v = IntVal(pos: pos, raw: current.value)
-                v.maxDigits = limits.maxNumericLiteralDigits
+                v.limits = limits
                 advance()
                 return v
             case .float:
-                let v = FloatVal(pos: pos, raw: current.value)
+                var v = FloatVal(pos: pos, raw: current.value)
+                v.limits = limits
                 advance()
                 return v
             case .bool:

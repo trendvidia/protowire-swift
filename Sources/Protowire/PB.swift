@@ -31,6 +31,15 @@ extension Dictionary: _PBMap where Key: Decodable, Value: Decodable {
 }
 
 protocol _PBOptional { var pbWrapped: Encodable? { get }; static var pbWrappedType: Any.Type { get } }
+
+/// An arbitrary-precision language value (`PXF.BigInt`, `PXF.Decimal`,
+/// `PXF.BigFloat`). As a field it is left out at zero, Optional or not, as
+/// protowire-go leaves out a zero `*big.Int`; as a list element or map value
+/// it is written, a zero as the empty message (draft -01 § PXF Annotations).
+protocol _PBLanguageNumber { var pbOmittedAsField: Bool { get } }
+
+/// The PB encoder, which a language number asks for to write its message.
+protocol _PBWriting {}
 extension Optional: _PBOptional where Wrapped: Encodable {
     var pbWrapped: Encodable? { self.map { $0 } }
     static var pbWrappedType: Any.Type { Wrapped.self }
@@ -47,6 +56,12 @@ extension Optional: _PBOptional where Wrapped: Encodable {
 /// nil one is absent. List elements and map entries keep their zeros, and a
 /// nil element or map value is written as its type's zero value (for a message,
 /// the empty message), since neither is nullable on the wire.
+///
+/// `PXF.BigInt`, `PXF.Decimal` and `PXF.BigFloat` are written as their pxf
+/// message in reduced form, and a zero field is left out even in an
+/// `Optional`, as protowire-go writes `*big.Int`, `*big.Rat` and `*big.Float`.
+/// The generated `Pxf_BigInt` and its siblings are messages, written as they
+/// are (draft -01 § PXF Annotations).
 ///
 /// A field's number is its `CodingKey`'s `intValue`, so a type needs Int
 /// CodingKeys. Encoding a key without one throws `EncodingError.invalidValue`.
@@ -71,7 +86,7 @@ public final class PBEncoder {
     }
 }
 
-private final class _PBEncoder: Encoder {
+private final class _PBEncoder: Encoder, _PBWriting {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]; var data = Data()
     /// The decoder's depth inside the bytes this encoder writes.
     let depth: Int
@@ -139,18 +154,21 @@ private final class _PBEncoder: Encoder {
         mutating func encodeIfPresent(_ v: UInt64?, forKey k: Key) throws { if let v { try u64(v, k) } }
         mutating func encodeIfPresent(_ v: Float?, forKey k: Key) throws { if let v { try f32(v, k) } }
         mutating func encodeIfPresent(_ v: Double?, forKey k: Key) throws { if let v { try f64(v, k) } }
-        mutating func encodeIfPresent<T: Encodable>(_ v: T?, forKey k: Key) throws { if let v { try write(v, k, set: true) } }
+        mutating func encodeIfPresent<T: Encodable>(_ v: T?, forKey k: Key) throws { if let v { try write(v, k, set: true, element: false) } }
 
-        mutating func encode<T: Encodable>(_ v: T, forKey k: Key) throws { try write(v, k, set: false) }
+        mutating func encode<T: Encodable>(_ v: T, forKey k: Key) throws { try write(v, k, set: false, element: false) }
 
         /// Writes one value. `set` means it is written at zero too: it is an
         /// `Optional` holding a value, a repeated element, or a map entry's
         /// key or value, none of which can be read back without their record.
-        mutating func write(_ v: Encodable, _ k: Key, set: Bool) throws {
+        /// `element` is the last two only: a language number is left out at
+        /// zero unless it is one.
+        mutating func write(_ v: Encodable, _ k: Key, set: Bool, element: Bool) throws {
             if let o = v as? _PBOptional {
-                if let wrapped = o.pbWrapped { try write(wrapped, k, set: true) }
+                if let wrapped = o.pbWrapped { try write(wrapped, k, set: true, element: element) }
                 return
             }
+            if !element, let n = v as? _PBLanguageNumber, n.pbOmittedAsField { return }
             switch v {
             case let x as Data: if set || !x.isEmpty { try tag(k, .bytes); Protowire.appendBytes(&encoder.data, x) }
             case let x as String: if set || !x.isEmpty { try string(x, k) }
@@ -214,7 +232,7 @@ private final class _PBEncoder: Encoder {
             if let o = v as? _PBOptional, o.pbWrapped == nil {
                 try writeZero(type(of: o).pbWrappedType, k)
             } else {
-                try write(v, k, set: true)
+                try write(v, k, set: true, element: true)
             }
         }
 

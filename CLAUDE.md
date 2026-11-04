@@ -31,6 +31,11 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_Bind.swift` — the schema-bound pass (design call 8).
 - `PXF_Time.swift` — `Google_Protobuf_Timestamp` / `Duration` as Codable
   (retroactive conformances): their PXF literals, and the message form for PB.
+- `PXF_BigNum.swift` — the generated `Pxf_BigInt` / `Pxf_Decimal` /
+  `Pxf_BigFloat` as Codable, and the big-number literal readers and writers.
+- `PXF_Numbers.swift` — `PXF.BigInt`, `PXF.Decimal`, `PXF.BigFloat`: the
+  language values for those messages (design call 11), on `BigUInt`
+  (`PXF_BigUInt.swift`, internal).
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
   — SBE primitives + dictionary codec + zero-copy reader.
 - `Envelope.swift` — hand-written `Envelope`/`AppError`/`FieldError`.
@@ -41,7 +46,7 @@ test target. Sources are flat under `Sources/Protowire/`:
 
 ```bash
 swift build                # warning-clean (treats warnings as errors)
-swift test                 # XCTest, ~300 cases
+swift test                 # XCTest, ~400 cases
 buf generate               # regen *.pb.swift files (uses buf.gen.yaml)
 ```
 
@@ -136,13 +141,26 @@ record with `conformance/update.sh`.
    getting the stored `value` bytes back (#63). Otherwise the Any stays as
    `type_url` and `value`, which is also all a Codable type can produce.
 
-10. **A literal carries its call's digit cap.** `Hardening.Limits` reaches the
+10. **A literal carries its call's limits.** `Hardening.Limits` reaches the
    parser and the PB and SBE decoders directly, and `PXFEncoder` and
    `PBEncoder`, which read only `maxNestingDepth` (a producer refuses output
    a decoder at the same limit would refuse). The Codable containers don't
-   hold it, so `PXF.Parser` writes `MaxNumericLiteralDigits` onto each `IntVal`
-   for a big-number type to read. A list's or map's count is checked by the
+   hold it, so `PXF.Parser` writes the call's limits onto each `IntVal` and
+   `FloatVal` for a big-number type to read (`PXF.literalLimits`): the digit
+   cap, and `maxBigFloatExponent` for a BigFloat. A PB decoder hands them to a
+   type through `_PBLimited`. A list's or map's count is checked by the
    parser as it reads, and across bindings by `PXF.checkRepeatedCounts`.
+
+11. **A big number is a message or a language value, and the two are written
+   differently.** The draft (§ PXF Annotations) says a producer writing a
+   message's fields writes them as they are, and one writing a language value
+   writes the reduced form. So `Pxf_Decimal` and its siblings are written as
+   they are (`1.00` keeps scale 2), and `PXF.Decimal` and its siblings in
+   reduced form, with a zero field left out even in an Optional, as
+   protowire-go writes `*big.Rat` (`_PBLanguageNumber` in `PB.swift`). The
+   language values are port-owned and nested in `PXF` so they shadow neither
+   `Foundation.Decimal` (38 digits, while a literal may have 4096) nor a
+   package's `BigInt`. `BigUInt` stays internal.
 
 ## Open gaps (not yet implemented)
 
