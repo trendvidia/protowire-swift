@@ -27,6 +27,17 @@ lockstep across language ports when the wire format changes.
   (`testdata/values/values.tsv`); the rows that differ are pinned against #70 and #71.
 ### Fixed
 
+- **`PXF.Format.formatDocument` keeps every directive**
+  ([#90](https://github.com/trendvidia/protowire-swift/issues/90)). It used to
+  write only `@type`, comments and entries, so a `@dataset` document formatted to
+  nothing and an `@entry`, `@proto` or named directive was lost. Now `@type` comes
+  first, then the other directives in source order, each after its comments: a
+  dataset as its header and one row per line (an absent cell empty, `null`
+  written), a named directive's body and a `@proto` body as they were read
+  (trendvidia/protowire#558). A document whose only directive is `@type` formats
+  as before. The output is byte for byte protowire-go's `FormatDocument`; the
+  conformance record now comes from protowire-go at that fix (`ecd900a`), which
+  changes the format rows of 29 dataset documents.
 - **`PBEncoder` writes a nil list element or map value as its type's zero value**
   ([#64](https://github.com/trendvidia/protowire-swift/issues/64)), the empty message
   for a message type. It used to drop the element, shortening the list, and to write
