@@ -14,17 +14,145 @@ extension PXF {
     public enum Format {
 
         /// Pretty-prints a parsed `Document`, preserving comments.
+        ///
+        /// It keeps every directive, with its dataset rows, in document
+        /// order (trendvidia/protowire#558). `@type` is written first: it
+        /// binds no anonymous `@proto`, so moving it changes nothing. The
+        /// other directives follow in source order, each after its
+        /// comments: a named directive's body and a `@proto` body as
+        /// written, and a dataset as its header and then one row per line,
+        /// an absent cell left empty. A document whose only directive is
+        /// `@type` formats as it always has. The output is the one
+        /// protowire-go's `FormatDocument` writes.
         public static func formatDocument(_ doc: Document) -> String {
             var out = ""
-            if let typeURL = doc.typeURL, !typeURL.isEmpty {
-                out += "@type \(typeURL)\n\n"
+            let typeURL = doc.typeURL ?? ""
+            let others = topDirectives(doc)
+            if others.isEmpty {
+                if !typeURL.isEmpty {
+                    out += "@type \(typeURL)\n\n"
+                }
+                writeComments(doc.leadingComments, level: 0, into: &out)
+                formatEntries(doc.entries, level: 0, into: &out)
+                return out
+            }
+
+            if !typeURL.isEmpty {
+                out += "@type \(typeURL)\n"
             }
             writeComments(doc.leadingComments, level: 0, into: &out)
-            formatEntries(doc.entries, level: 0, into: &out)
+            for directive in others {
+                switch directive {
+                case .named(let d):
+                    writeComments(d.leadingComments, level: 0, into: &out)
+                    formatNamedDirective(d, into: &out)
+                case .dataset(let d):
+                    writeComments(d.leadingComments, level: 0, into: &out)
+                    formatDataset(d, into: &out)
+                case .proto(let d):
+                    writeComments(d.leadingComments, level: 0, into: &out)
+                    formatProto(d, into: &out)
+                }
+            }
+            if !doc.entries.isEmpty {
+                out += "\n"
+                formatEntries(doc.entries, level: 0, into: &out)
+            }
             return out
         }
 
         // MARK: - Internals
+
+        private enum TopDirective {
+            case named(Directive)
+            case dataset(DatasetDirective)
+            case proto(ProtoDirective)
+
+            var pos: Position {
+                switch self {
+                case .named(let d): return d.pos
+                case .dataset(let d): return d.pos
+                case .proto(let d): return d.pos
+                }
+            }
+        }
+
+        /// The document's directives other than `@type`, which `Document`
+        /// keeps in three lists, merged back into source order: an anonymous
+        /// `@proto` binds the typed directive after it, so the order is part
+        /// of the meaning. A `Position` carries no byte offset, so the order
+        /// is by line, then column; directives never share a position.
+        private static func topDirectives(_ doc: Document) -> [TopDirective] {
+            var all: [TopDirective] = []
+            all += doc.directives.map { .named($0) }
+            all += doc.datasets.map { .dataset($0) }
+            all += doc.protos.map { .proto($0) }
+            // Swift's sort is not stable, so the index breaks ties the way
+            // Go's stable sort does.
+            return all.enumerated().sorted { a, b in
+                let pa = a.element.pos, pb = b.element.pos
+                if pa.line != pb.line { return pa.line < pb.line }
+                if pa.column != pb.column { return pa.column < pb.column }
+                return a.offset < b.offset
+            }.map(\.element)
+        }
+
+        /// `@<name> prefix* [{body}]`, the body as it was written: it is raw
+        /// text, which the directive's consumer decodes.
+        private static func formatNamedDirective(_ d: Directive, into out: inout String) {
+            out += "@\(d.name)"
+            for p in d.prefixes {
+                out += " \(p)"
+            }
+            if let body = d.body {
+                out += " {"
+                out += rawText(body)
+                out += "}"
+            }
+            out += "\n"
+        }
+
+        /// The header, then one row per line. A `nil` cell is an absent
+        /// field and is left empty; `null` is written.
+        private static func formatDataset(_ d: DatasetDirective, into out: inout String) {
+            out += "@dataset"
+            if !d.type.isEmpty {
+                out += " \(d.type)"
+            }
+            out += " (\(d.columns.joined(separator: ", ")))\n"
+            for row in d.rows {
+                out += "("
+                for (i, cell) in row.cells.enumerated() {
+                    if i > 0 { out += ", " }
+                    if let cell {
+                        formatValue(cell.value, level: 0, into: &out)
+                    }
+                }
+                out += ")\n"
+            }
+        }
+
+        /// A `@proto` directive in the shape it was read in.
+        private static func formatProto(_ d: ProtoDirective, into out: inout String) {
+            out += "@proto"
+            switch d.shape {
+            case .anonymous:
+                out += " {\(rawText(d.body))}"
+            case .named:
+                out += " \(d.typeName) {\(rawText(d.body))}"
+            case .source:
+                out += " \"\"\"\(rawText(d.body))\"\"\""
+            case .descriptor:
+                out += " b\"\(d.body.base64EncodedString())\""
+            }
+            out += "\n"
+        }
+
+        /// Raw source bytes as text. They were read from a `String`, so they
+        /// are UTF-8.
+        private static func rawText(_ data: Data) -> String {
+            String(decoding: data, as: UTF8.self)
+        }
 
         private static func formatEntries(_ entries: [Entry], level: Int, into out: inout String) {
             for entry in entries {
@@ -76,7 +204,9 @@ extension PXF {
             out += "\n"
         }
 
-        private static func formatValue(_ value: Value, level: Int, into out: inout String) {
+        /// A value as the formatter writes it inside `formatDocument`.
+        /// Internal, so the tests can compare dataset cells by their text.
+        static func formatValue(_ value: Value, level: Int, into out: inout String) {
             switch value {
             case let v as StringVal:
                 out += quote(v.value)
