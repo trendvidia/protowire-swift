@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 import Foundation
+import SwiftProtobuf
 import XCTest
 @testable import Protowire
 
@@ -119,6 +120,45 @@ final class PBWireTypeTests: XCTestCase {
         XCTAssertEqual(accepted, 254)
         XCTAssertEqual(rejected, 352)
         // Every reject at the top level that protowire-go reports from its skip.
+        XCTAssertEqual(sameText, Self.rows.filter { !$0.accept && $0.detail.hasPrefix("corrupt field") }.count)
+    }
+
+    /// The schema-bound reader, `PXF.BoundMessage(reading:)`, which reads the
+    /// PB of an Any's body and of a `pb` input to the text marshaller, holds
+    /// to the same table through conf.proto's descriptor set.
+    func testBoundReaderMatchesProtobuf() throws {
+        let url = Bundle.module.resourceURL!.appendingPathComponent("testdata/wiretype/conf.binpb")
+        let set = try Google_Protobuf_FileDescriptorSet(serializedBytes: try Data(contentsOf: url))
+        let annotations = PXF.Annotations(descriptorSet: set)
+        func read(_ data: Data) throws -> Data {
+            try PXF.BoundMessage(reading: data, message: "conf.All", annotations: annotations).serialized()
+        }
+        var accepted = 0, rejected = 0, sameText = 0
+        for row in Self.rows {
+            let got = Result { try read(row.input) }
+            if !row.accept {
+                rejected += 1
+                switch got {
+                case .success:
+                    XCTFail("\(row.hex): protobuf-go rejects it (\(row.detail)), this accepts it")
+                case .failure(let error):
+                    guard row.detail.contains("corrupt field") else { break }
+                    let text = String(describing: error)
+                    XCTAssertTrue(row.detail.hasSuffix(text), "\(row.hex): \"\(text)\", protowire-go \"\(row.detail)\"")
+                    if row.detail == text { sameText += 1 }
+                }
+                continue
+            }
+            accepted += 1
+            guard case .success(let bytes) = got else {
+                XCTFail("\(row.hex): protobuf-go accepts it, this rejects it: \(got)")
+                continue
+            }
+            XCTAssertEqual(bytes, try read(Data(unhex(row.detail))), "\(row.hex): values differ from protobuf-go's")
+        }
+        print("wire types, bound reader: \(Self.rows.count) inputs, protobuf-go accepts \(accepted), rejects \(rejected); \(sameText) errors are protowire-go's text exactly")
+        XCTAssertEqual(accepted, 254)
+        XCTAssertEqual(rejected, 352)
         XCTAssertEqual(sameText, Self.rows.filter { !$0.accept && $0.detail.hasPrefix("corrupt field") }.count)
     }
 
