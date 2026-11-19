@@ -362,14 +362,3 @@ final class PBZeroSkippingTests: XCTestCase {
 private func hex(_ data: Data) -> String {
     data.map { String(format: "%02x", $0) }.joined()
 }
-
-private func unhex(_ s: String) -> [UInt8] {
-    var out: [UInt8] = []
-    var i = s.startIndex
-    while i < s.endIndex {
-        let j = s.index(i, offsetBy: 2)
-        out.append(UInt8(s[i..<j], radix: 16)!)
-        i = j
-    }
-    return out
-}
