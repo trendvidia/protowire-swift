@@ -575,8 +575,11 @@ extension _PBDecoder: SingleValueDecodingContainer {
 private func consumeFieldValue(tag: Int32, wireType: Protowire.WireType, data: Data) -> Int {
     switch wireType {
     case .varint: return Protowire.consumeVarint(data)?.length ?? -1
-    case .fixed64: return 8
-    case .fixed32: return 4
+    // Bounded like the varint and bytes cases: a fixed field cut short at the
+    // end of the input is corrupt, not 4 or 8 bytes to skip past the end
+    // (trendvidia/protowire-swift#98).
+    case .fixed64: return Protowire.consumeFixed64(data)?.length ?? -1
+    case .fixed32: return Protowire.consumeFixed32(data)?.length ?? -1
     case .bytes: return Protowire.consumeBytes(data)?.length ?? -1
     default: return -1
     }

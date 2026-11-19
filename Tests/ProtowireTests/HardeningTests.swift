@@ -31,6 +31,24 @@ final class HardeningTests: XCTestCase {
         enum CodingKeys: Int, CodingKey { case big_int = 1, decimal = 2, big_float = 3 }
     }
 
+    struct Int64Holder: Codable {
+        var value: Int64?
+        enum CodingKeys: Int, CodingKey { case value = 1 }
+    }
+
+    // MARK: - PB fixed-width fields cut short
+
+    // A fixed32 or fixed64 field with fewer bytes left than its width is
+    // refused, not skipped past the end of the input, which trapped
+    // (trendvidia/protowire-swift#98). 0d 01 is the corpus row
+    // pb/wiretype-mismatch-fixed32-cut-short.
+    func testFixedFieldCutShortIsRefused() {
+        for bytes: [UInt8] in [[0x0d, 0x01], [0x09, 0x01], [0x0d], [0x09, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07],
+                               [0x9d, 0x06, 0x01, 0x02]] {
+            XCTAssertThrowsError(try PBDecoder().decode(Int64Holder.self, from: Data(bytes)), "\(bytes)")
+        }
+    }
+
     struct BigIntList: Decodable {
         var values: [Pxf_BigInt]
         enum CodingKeys: Int, CodingKey { case values = 1 }
