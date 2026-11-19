@@ -71,12 +71,45 @@ final class PXFFormatDirectivesTests: XCTestCase {
         let cases: [(src: String, want: String?)] = [
             ("@proto { string id = 1; }\n@dataset (id)\n(\"a\")\n", nil),
             ("@proto a.v1.R { string id = 1; }\n@dataset a.v1.R (id)\n(\"a\")\n", nil),
-            ("@proto \"\"\"syntax = \"proto3\"; message R { string id = 1; }\"\"\"\n@dataset R (id)\n(\"a\")\n", nil),
+            // The triple quotes go on lines of their own (protowire-go#303).
+            ("@proto \"\"\"syntax = \"proto3\"; message R { string id = 1; }\"\"\"\n@dataset R (id)\n(\"a\")\n",
+             "@proto \"\"\"\nsyntax = \"proto3\"; message R { string id = 1; }\n\"\"\"\n@dataset R (id)\n(\"a\")\n"),
             // @type moves to the front: it binds no @proto, so this changes nothing.
             ("@proto b\"CgA=\"\n@type a.v1.M\n\nx = 1\n", "@type a.v1.M\n@proto b\"CgA=\"\n\nx = 1\n"),
         ]
         for c in cases {
             XCTAssertEqual(try formatRoundTrip(c.src), c.want ?? c.src, c.src)
+        }
+    }
+
+    // A triple-quoted @proto is written with its delimiters on lines of their
+    // own, and its body reads back byte for byte (protowire-go#303).
+    func testProtoSourceLayout() throws {
+        // The line breaks around the body stay.
+        let src = "@proto \"\"\"\n  syntax = \"proto3\";\n  package fmt.v1;\n  message Doc { string name = 1; }\n\"\"\"\n@type fmt.v1.Doc\n"
+        XCTAssertEqual(try formatRoundTrip(src),
+                       "@type fmt.v1.Doc\n@proto \"\"\"\n  syntax = \"proto3\";\n  package fmt.v1;\n  message Doc { string name = 1; }\n\"\"\"\n")
+
+        let cases: [(name: String, src: String, body: String)] = [
+            // Written on the closing delimiter's line, the last quote would
+            // open the closing """ early, and the output would not parse.
+            ("body ends in a quote", "@proto \"\"\"\n  syntax = \"proto3\";\n  import \"google/protobuf/empty.proto\"\n  \"\"\"\n",
+             "syntax = \"proto3\";\nimport \"google/protobuf/empty.proto\""),
+            // Written on the closing delimiter's line, a last line of only
+            // whitespace would be taken for the delimiter's indent and dropped.
+            ("whitespace-only last line", "@proto \"\"\"syntax = \"proto3\";\n  \n\"\"\"\n", "syntax = \"proto3\";\n  "),
+            ("leading line break", "@proto \"\"\"\n\nsyntax = \"proto3\";\"\"\"\n", "\nsyntax = \"proto3\";"),
+            ("trailing line break", "@proto \"\"\"syntax = \"proto3\";\n\n\"\"\"\n", "syntax = \"proto3\";\n"),
+            ("empty body", "@proto \"\"\"\"\"\"\n", ""),
+        ]
+        for c in cases {
+            let doc = try PXF.Parser(string: c.src).parseDocument()
+            XCTAssertEqual(doc.protos.count, 1, c.name)
+            XCTAssertEqual(String(decoding: doc.protos.first?.body ?? Data(), as: UTF8.self), c.body, "\(c.name): body as read")
+            let out = try formatRoundTrip(c.src)
+            XCTAssertEqual(out, "@proto \"\"\"\n" + c.body + "\n\"\"\"\n", c.name)
+            let again = try PXF.Parser(string: out).parseDocument()
+            XCTAssertEqual(again.protos.first?.body, doc.protos.first?.body, "\(c.name): body after a re-parse")
         }
     }
 
