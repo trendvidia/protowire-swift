@@ -523,9 +523,7 @@ private final class _PBDecoder: Decoder, _PBLimited {
                     try decoder.limits.checkRepeated(count: es.count)
                     let eb = Protowire.consumeBytes(d)?.value ?? Data()
                     let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1, limits: decoder.limits)
-                    let key = try sub.decodeAny(mt.keyType, from: try sub.getData(tag: 1))
-                    let val = try sub.decodeAny(mt.valueType, from: try sub.getData(tag: 2))
-                    es.append((key, val))
+                    es.append((try sub.entryPart(1, mt.keyType), try sub.entryPart(2, mt.valueType)))
                 }
                 return mt.init(entries: es) as! T
             }
@@ -549,6 +547,14 @@ private final class _PBDecoder: Decoder, _PBLimited {
         if let err = fieldsError { throw err }
         guard let d = fields[tag]?.last else { throw PB.Error.corruptData }
         return d
+    }
+
+    /// A map entry's key (1) or value (2). One the entry does not carry is
+    /// its type's zero, as protobuf reads it: for a message, the empty one.
+    func entryPart(_ tag: Int32, _ type: Decodable.Type) throws -> Any {
+        if let err = fieldsError { throw err }
+        guard let d = fields[tag]?.last else { return try zero(type) }
+        return try decodeAny(type, from: d)
     }
 }
 

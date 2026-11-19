@@ -60,6 +60,33 @@ final class PBTests: XCTestCase {
         let env = Envelope(status: 0, error: AppError(code: "", metadata: ["": ""]))
         XCTAssertEqual(hex(try PBEncoder().encode(env)), "22062a040a001200")
     }
+
+    struct EntryInner: Codable, Equatable {
+        var name = ""
+        enum CodingKeys: Int, CodingKey { case name = 1 }
+    }
+
+    struct Maps: Codable, Equatable {
+        var tags: [String: String] = [:]
+        var inners: [Int32: EntryInner] = [:]
+        var optionals: [Int32: EntryInner?] = [:]
+        enum CodingKeys: Int, CodingKey { case tags = 1, inners = 2, optionals = 3 }
+    }
+
+    /// A map entry that leaves out its key or value is read with that part at
+    /// its type's zero, as protobuf reads it, and a message value is the empty
+    /// message, not nil (protowire-go#307). The decoder refused such an entry.
+    func testMapEntryMissingKeyOrValueReadsZero() throws {
+        func decode(_ hex: String) throws -> Maps {
+            try PBDecoder().decode(Maps.self, from: Data(unhex(hex)))
+        }
+        XCTAssertEqual(try decode("0a030a0161"), Maps(tags: ["a": ""]))
+        XCTAssertEqual(try decode("0a03120162"), Maps(tags: ["": "b"]))
+        XCTAssertEqual(try decode("0a00"), Maps(tags: ["": ""]))
+        XCTAssertEqual(try decode("12020801"), Maps(inners: [1: EntryInner()]))
+        XCTAssertEqual(try decode("1a020801"), Maps(optionals: [1: EntryInner()]))
+        XCTAssertEqual(try decode("1a00"), Maps(optionals: [0: EntryInner()]))
+    }
 }
 
 /// Hex goldens from protowire-go's `pb.Marshal` at f8a01b1 for the Go structs
@@ -334,4 +361,15 @@ final class PBZeroSkippingTests: XCTestCase {
 
 private func hex(_ data: Data) -> String {
     data.map { String(format: "%02x", $0) }.joined()
+}
+
+private func unhex(_ s: String) -> [UInt8] {
+    var out: [UInt8] = []
+    var i = s.startIndex
+    while i < s.endIndex {
+        let j = s.index(i, offsetBy: 2)
+        out.append(UInt8(s[i..<j], radix: 16)!)
+        i = j
+    }
+    return out
 }
