@@ -9,7 +9,7 @@
 //
 // Contract:
 //
-//   check-decode --format <pxf|pxf-pb|pb|pb-render|sbe|envelope>
+//   check-decode --format <pxf|pxf-pb|pxf-fmt|pb|pb-render|sbe|envelope>
 //                --schema <fully.qualified.MessageType>
 //                --proto  <path-to-adversarial.proto>
 //                --input  <path>
@@ -20,6 +20,11 @@
 //   (protowire/scripts/cross_write_check.sh). Like the Java, Rust and C++
 //   ports, it reads the descriptor set beside --proto (`<stem>.binpb`, built
 //   with its imports), since nothing here compiles `.proto` text.
+//
+//   pxf-fmt parses the document without a schema and writes what
+//   `PXF.Format.formatDocument` makes of it on stdout, byte for byte, for the
+//   format gate (protowire/scripts/cross_fmt_check.sh, protowire#584). It
+//   needs no --schema or --proto.
 //
 //   --limit sets one HARDENING limit for this run, so the corpus can prove a
 //   64 MiB cap with a small fixture.
@@ -120,7 +125,7 @@ struct BigNumHolder: Codable {
 // MARK: - CLI
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pxf-pb|pb|pb-render|sbe|envelope> --schema <name> [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
+    FileHandle.standardError.write(Data("usage: check-decode --format <pxf|pxf-pb|pxf-fmt|pb|pb-render|sbe|envelope> [--schema <name>] [--proto <path>] --input <path> [--limit NAME=VALUE]...\n".utf8))
     exit(2)
 }
 
@@ -174,7 +179,9 @@ while i < args.count {
 }
 
 guard let format = format, !format.isEmpty else { usage() }
-guard let schema = schema, !schema.isEmpty else { usage() }
+// Formatting reads no schema, so pxf-fmt alone may leave --schema out.
+guard let schema = schema ?? (format == "pxf-fmt" ? "" : nil),
+      !schema.isEmpty || format == "pxf-fmt" else { usage() }
 guard let inputPath = inputPath, !inputPath.isEmpty else { usage() }
 
 let inputURL = URL(fileURLWithPath: inputPath)
@@ -293,6 +300,16 @@ func pxfPB(_ data: Data, schema: String) throws -> Data {
     return bytes
 }
 
+/// pxf-fmt: the document as the formatter writes it. Formatting works on the
+/// parsed document, not a message: it writes the comments, directives and
+/// dataset rows the parser kept, and needs no schema. A document that does
+/// not parse is a reject.
+func pxfFmt(_ data: Data) throws -> Data {
+    let parser = PXF.Parser(input: data)
+    parser.limits = limits
+    return Data(PXF.Format.formatDocument(try parser.parseDocument()).utf8)
+}
+
 struct RuntimeError: Error, CustomStringConvertible {
     let message: String
     init(_ m: String) { message = m }
@@ -305,6 +322,8 @@ do {
         try pxfDecode(inputData, schema: schema)
     case "pxf-pb":
         FileHandle.standardOutput.write(try pxfPB(inputData, schema: schema))
+    case "pxf-fmt":
+        FileHandle.standardOutput.write(try pxfFmt(inputData))
     case "pb":
         try pbDecode(inputData, schema: schema)
     case "pb-render":

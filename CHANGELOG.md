@@ -27,6 +27,15 @@ lockstep across language ports when the wire format changes.
   (`testdata/values/values.tsv`); the rows that differ are pinned against #70 and #71.
 ### Fixed
 
+- **`PXF.Format.formatDocument` writes a triple-quoted `@proto` with its `"""`
+  on lines of their own** (trendvidia/protowire-go#303). It wrote the body
+  straight after the opening `"""` and straight before the closing one. Reading
+  strips a line break after the opening `"""` and drops a last line holding only
+  whitespace, so a body ending in `"` (a last line `import "x.proto"`) formatted
+  to text that does not parse, and a body's leading line break, trailing line
+  break or whitespace-only last line was lost. Now the output is `@proto """`, a
+  line break, the body, a line break and `"""`, as protowire-go writes since
+  its #306, and every body without a `"""` in it reads back byte for byte.
 - **`PXF.Format.formatDocument` keeps every directive**
   ([#90](https://github.com/trendvidia/protowire-swift/issues/90)). It used to
   write only `@type`, comments and entries, so a `@dataset` document formatted to
