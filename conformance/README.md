@@ -13,6 +13,8 @@ needed to run the comparison.
 | `Tests/ProtowireTests/ConformanceTests.swift` | The comparison |
 | `Tests/ProtowireTests/testdata/conformance/values.tsv` | The spec's struct-binding table, copied unchanged |
 | `Tests/ProtowireTests/PBValuesTableTests.swift` | A Codable twin of each row, compared with `PBEncoder`'s bytes; known differences are listed in the test with their issue |
+| `conformance/wiretype/` | Go program, pinned like refgen, that records protobuf-go's verdict on a record of every wire type for every field of a 25-field message (#97); run it with `GOWORK=off go run . --out ../../Tests/ProtowireTests/testdata/wiretype` |
+| `Tests/ProtowireTests/PBWireTypeTests.swift` | Holds `PBDecoder` and the schema-bound reader to that table |
 
 ## What is compared
 

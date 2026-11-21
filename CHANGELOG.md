@@ -27,6 +27,26 @@ lockstep across language ports when the wire format changes.
   (`testdata/values/values.tsv`); the rows that differ are pinned against #70 and #71.
 ### Fixed
 
+- **`PBDecoder` reads a field only from a tag of its wire type, as protobuf does**
+  ([#97](https://github.com/trendvidia/protowire-swift/issues/97)). It read a field
+  by its Swift type whatever the tag said: `0a0101` on an int64 read the length byte
+  as the value 1, and `0801` on a string was refused with `nesting depth 101 exceeds
+  maximum 100`. Now wire type 6 or 7 is refused on any field, and a known field whose
+  wire type does not match its type is skipped as an unknown field and left as it was
+  (trendvidia/protowire#614). A list of numbers or enums reads both its own wire type
+  and the packed form, and a packed list cut short is refused rather than ended
+  there. A well-formed group is skipped, as protobuf skips one, where it was refused.
+  Map entries, the `pxf.BigInt`, `pxf.Decimal` and `pxf.BigFloat` messages and the
+  schema-bound reader behind the PXF text of a PB input follow the same rule. A field
+  that cannot be skipped throws the new `DecoderError.corruptField`, whose text is
+  protowire-go's: `corrupt field 1: proto: cannot parse reserved wire type`,
+  `corrupt field 3 in map entry: unexpected EOF`. `PBWireTypeTests` holds both
+  readers to protobuf-go on protowire-go's 606 inputs (`conformance/wiretype`).
+  **This accepts messages that were refused, and reads some differently.**
+- **`PBDecoder` reads a map entry that leaves out its key or value** with that part
+  at its type's zero, as protobuf does; for a message value that is the empty
+  message. It refused the entry.
+
 - **`PXF.Format.formatDocument` writes a triple-quoted `@proto` with its `"""`
   on lines of their own** (trendvidia/protowire-go#303). It wrote the body
   straight after the opening `"""` and straight before the closing one. Reading
