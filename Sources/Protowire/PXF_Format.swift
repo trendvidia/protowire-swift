@@ -141,7 +141,14 @@ extension PXF {
             case .named:
                 out += " \(d.typeName) {\(rawText(d.body))}"
             case .source:
-                out += " \"\"\"\(rawText(d.body))\"\"\""
+                // The delimiters go on lines of their own. Reading strips the
+                // line break after the opening """ and drops the last line
+                // when it holds only whitespace, so the body reads back byte
+                // for byte; written on the delimiters' lines instead, a body
+                // ending in '"' would close the string early and a
+                // whitespace-only last line would be dropped
+                // (trendvidia/protowire-go#303).
+                out += " \"\"\"\n\(rawText(d.body))\n\"\"\""
             case .descriptor:
                 out += " b\"\(d.body.base64EncodedString())\""
             }

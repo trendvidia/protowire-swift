@@ -74,6 +74,10 @@ public enum PXF {
         public var value: String
         /// The position of the token in the input.
         public var pos: Position
+        /// Whether a `.string` token was written triple-quoted. `value` cannot
+        /// tell: both forms lex to `.string`, and a `@proto` source body must
+        /// be the triple-quoted one (#100).
+        internal var tripleQuoted = false
     }
 
     /// A lexer that scans PXF input and produces tokens.
@@ -355,7 +359,7 @@ public enum PXF {
                     advance()
                     advance()
                     advance()
-                    return Token(kind: .string, value: Lexer.dedent(raw), pos: pos)
+                    return Token(kind: .string, value: Lexer.dedent(raw), pos: pos, tripleQuoted: true)
                 }
                 advance()
             }
