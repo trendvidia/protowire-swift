@@ -123,35 +123,37 @@ extension PXF.BoundMessage {
     func value(_ name: String) -> Value? { values.first { $0.field.name == name }?.value }
 
     /// Reads protobuf bytes the way the stock runtime does: the last of a
-    /// singular field wins, and an unknown field is skipped.
+    /// singular field wins, and an unknown field is skipped. So is a known
+    /// field whose wire type does not match its type, as protobuf skips one
+    /// (#97, trendvidia/protowire#614).
     init(reading data: Data, message name: String, annotations: PXF.Annotations) throws {
         self.init(name: name)
         guard let message = annotations.message(name) else { return }
-        var rest = data
         var lists: [Int32: [Value]] = [:]
         var maps: [Int32: [(key: Value, value: Value)]] = [:]
-        while !rest.isEmpty {
-            guard let (number, wire, tagLength) = Protowire.consumeTag(rest) else { throw PB.Error.corruptData }
-            rest = rest.dropFirst(tagLength)
-            let read = try Self.readValue(wire: wire, from: rest)
-            rest = rest.dropFirst(read.length)
-            guard let field = message.fields.first(where: { $0.number == number }) else { continue }
+        for record in try Self.records(data, context: "") {
+            guard let field = message.fields.first(where: { $0.number == record.number }) else { continue }
+            // A group is not read here, so one on a group field is refused
+            // rather than lost.
+            if field.type == .group && record.wire == .startGroup { throw PB.Error.corruptData }
+            guard Self.reads(field, record.wire) else { continue }
+            let read = try Self.readValue(wire: record.wire, from: record.value)
             if field.isMap {
                 guard case .bytes(let body) = read.raw else { throw PB.Error.corruptData }
-                maps[number, default: []].append(try Self.readMapEntry(body, field, annotations))
+                maps[record.number, default: []].append(try Self.readMapEntry(body, field, annotations))
             } else if field.isRepeated {
-                if case .bytes(let packed) = read.raw, ![.string, .bytes, .message, .group].contains(field.type) {
+                if case .bytes(let packed) = read.raw, Self.wireType(of: field) != .bytes {
                     var body = packed
                     while !body.isEmpty {
                         let item = try Self.readValue(wire: Self.wireType(of: field), from: body)
                         body = body.dropFirst(item.length)
-                        lists[number, default: []].append(try Self.convert(item.raw, field, annotations))
+                        lists[record.number, default: []].append(try Self.convert(item.raw, field, annotations))
                     }
                 } else {
-                    lists[number, default: []].append(try Self.convert(read.raw, field, annotations))
+                    lists[record.number, default: []].append(try Self.convert(read.raw, field, annotations))
                 }
             } else {
-                values.removeAll { $0.field.number == number }
+                values.removeAll { $0.field.number == record.number }
                 set(field, try Self.convert(read.raw, field, annotations))
             }
         }
@@ -163,12 +165,44 @@ extension PXF.BoundMessage {
         }
     }
 
+    /// A message's records, each checked as protobuf checks a field it skips:
+    /// a value cut short, wire type 6 or 7, or an end-group that ends nothing
+    /// is corrupt, whichever field it is on. The error is protowire-go's.
+    private static func records(_ data: Data, context: String) throws
+        -> [(number: Int32, wire: Protowire.WireType, value: Data)] {
+        var out: [(number: Int32, wire: Protowire.WireType, value: Data)] = []
+        var i = data.startIndex
+        while i < data.endIndex {
+            guard let (number, wire, start) = try? PB.readTag(data, at: i),
+                  number <= Protowire.maxValidNumber else { throw PB.Error.corruptData }
+            do {
+                i = try PB.skipValue(number: number, wire: wire, data, at: start)
+            } catch let failure as PB.SkipFailure {
+                throw DecoderError.corruptField(number: number, reason: failure.rawValue, context: context)
+            }
+            if let w = Protowire.WireType(rawValue: Int8(wire)) { out.append((number, w, Data(data[start..<i]))) }
+        }
+        return out
+    }
+
+    /// The wire type a single value of the field is written with.
     private static func wireType(of field: PXF.Annotations.Field) -> Protowire.WireType {
         switch field.type {
         case .fixed32, .sfixed32, .float: return .fixed32
         case .fixed64, .sfixed64, .double: return .fixed64
+        case .string, .bytes, .message: return .bytes
+        case .group: return .startGroup
         default: return .varint
         }
+    }
+
+    /// Whether the field is read from a record of `wire`: its own wire type,
+    /// and for a repeated number also the packed form. A map's entries are
+    /// length-delimited.
+    private static func reads(_ field: PXF.Annotations.Field, _ wire: Protowire.WireType) -> Bool {
+        if field.isMap { return wire == .bytes }
+        let own = wireType(of: field)
+        return wire == own || (field.isRepeated && own != .bytes && own != .startGroup && wire == .bytes)
     }
 
     private static func readMapEntry(_ body: Data, _ field: PXF.Annotations.Field,
@@ -176,14 +210,13 @@ extension PXF.BoundMessage {
         guard let keyField = field.mapEntryFields.first(where: { $0.number == 1 }),
               let valueField = field.mapEntryFields.first(where: { $0.number == 2 }) else { throw PB.Error.corruptData }
         var key = zero(keyField), value = zero(valueField)
-        var rest = body
-        while !rest.isEmpty {
-            guard let (number, wire, length) = Protowire.consumeTag(rest) else { throw PB.Error.corruptData }
-            rest = rest.dropFirst(length)
-            let item = try readValue(wire: wire, from: rest)
-            rest = rest.dropFirst(item.length)
-            if number == 1 { key = try convert(item.raw, keyField, annotations) }
-            if number == 2 { value = try convert(item.raw, valueField, annotations) }
+        for record in try records(body, context: " in map entry") {
+            if record.number == 1 && reads(keyField, record.wire) {
+                key = try convert(try readValue(wire: record.wire, from: record.value).raw, keyField, annotations)
+            }
+            if record.number == 2 && reads(valueField, record.wire) {
+                value = try convert(try readValue(wire: record.wire, from: record.value).raw, valueField, annotations)
+            }
         }
         return (key, value)
     }
