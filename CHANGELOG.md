@@ -11,6 +11,8 @@ lockstep across language ports when the wire format changes.
 
 ## [Unreleased]
 
+## [1.2.0]
+
 ### Added
 
 - **`pxf.BigFloat`, `pxf.BigInt` and `pxf.Decimal` read and write as literals**
@@ -36,77 +38,51 @@ lockstep across language ports when the wire format changes.
   to and from `Foundation.Decimal`, failing where the value doesn't fit. The
   generated `Pxf_Decimal` and its siblings are still written as they are. The
   struct-binding table's big-number rows now match protowire-go.
-### Fixed
 
-- **A `pxf.Decimal` or `pxf.BigFloat` literal follows the call's limits**, as a
-  `pxf.BigInt` literal did. Read into `Pxf_Decimal` or `Pxf_BigFloat` without a
-  schema, it was bound by the `Hardening` constants, not by a lowered
-  `maxNumericLiteralDigits` or `maxBigFloatExponent`.
-- **`PBDecoder` reads a field only from a tag of its wire type, as protobuf does**
-  ([#97](https://github.com/trendvidia/protowire-swift/issues/97)). It read a field
-  by its Swift type whatever the tag said: `0a0101` on an int64 read the length byte
-  as the value 1, and `0801` on a string was refused with `nesting depth 101 exceeds
-  maximum 100`. Now wire type 6 or 7 is refused on any field, and a known field whose
-  wire type does not match its type is skipped as an unknown field and left as it was
-  (trendvidia/protowire#614). A list of numbers or enums reads both its own wire type
-  and the packed form, and a packed list cut short is refused rather than ended
-  there. A well-formed group is skipped, as protobuf skips one, where it was refused.
-  Map entries, the `pxf.BigInt`, `pxf.Decimal` and `pxf.BigFloat` messages and the
-  schema-bound reader behind the PXF text of a PB input follow the same rule. A field
-  that cannot be skipped throws the new `DecoderError.corruptField`, whose text is
-  protowire-go's: `corrupt field 1: proto: cannot parse reserved wire type`,
-  `corrupt field 3 in map entry: unexpected EOF`. `PBWireTypeTests` holds both
-  readers to protobuf-go on protowire-go's 606 inputs (`conformance/wiretype`).
-  **This accepts messages that were refused, and reads some differently.**
-- **`PBDecoder` reads a map entry that leaves out its key or value** with that part
-  at its type's zero, as protobuf does; for a message value that is the empty
-  message. It refused the entry.
-
-- **`PXF.Format.formatDocument` writes a triple-quoted `@proto` with its `"""`
-  on lines of their own** (trendvidia/protowire-go#303). It wrote the body
-  straight after the opening `"""` and straight before the closing one. Reading
-  strips a line break after the opening `"""` and drops a last line holding only
-  whitespace, so a body ending in `"` (a last line `import "x.proto"`) formatted
-  to text that does not parse, and a body's leading line break, trailing line
-  break or whitespace-only last line was lost. Now the output is `@proto """`, a
-  line break, the body, a line break and `"""`, as protowire-go writes since
-  its #306, and every body without a `"""` in it reads back byte for byte.
-- **`PXF.Format.formatDocument` keeps every directive**
-  ([#90](https://github.com/trendvidia/protowire-swift/issues/90)). It used to
-  write only `@type`, comments and entries, so a `@dataset` document formatted to
-  nothing and an `@entry`, `@proto` or named directive was lost. Now `@type` comes
-  first, then the other directives in source order, each after its comments: a
-  dataset as its header and one row per line (an absent cell empty, `null`
-  written), a named directive's body and a `@proto` body as they were read
-  (trendvidia/protowire#558). A document whose only directive is `@type` formats
-  as before. The output is byte for byte protowire-go's `FormatDocument`; the
-  conformance record now comes from protowire-go at that fix (`ecd900a`), which
-  changes the format rows of 29 dataset documents.
-- **`PBEncoder` writes a nil list element or map value as its type's zero value**
-  ([#64](https://github.com/trendvidia/protowire-swift/issues/64)), the empty message
-  for a message type. It used to drop the element, shortening the list, and to write
-  the entry without its value field. **The bytes change** for a list or map of
-  Optionals that holds a nil.
-- **`PXFEncoder` writes what the reference writes**, and `ConformanceTests` now
-  compares its text with `pxf.Marshal` over the corpus. Lists were invalid text and
-  now round-trip ([#32](https://github.com/trendvidia/protowire-swift/issues/32)). A
-  nested `_null` path is written inside its own block, not as a dotted root entry
-  ([#42](https://github.com/trendvidia/protowire-swift/issues/42)). **The text
-  changes for existing types:** nested messages are `name { ... }` rather than
-  `name = { ... }`, lists are one element per line, map keys are sorted, an empty list
-  or map is left out unless `emitDefaults` is set, floats use Go's `%g` spelling,
-  and a timestamp has no trailing zeros. With a schema, an enum's name is written bare.
-- `Protowire.consumeFixed32`, `consumeFixed64` and `SBE.readHeader` read a `Data`
-  slice at any offset. They trapped on a misaligned one.
-- **An Any is written as `@type` and a body only when the body reads back as the
-  same bytes** ([#63](https://github.com/trendvidia/protowire-swift/issues/63),
-  protowire#501). The schema-bound marshaller that `ConformanceTests` compares
-  wrote a body for any value that parsed, which changed a value holding unknown
-  fields, fields or map entries out of order, explicit zeros, a Timestamp past
-  year 9999, or an unset `(pxf.default)` or `(pxf.required)` field. It also
-  wrote unreadable text for a chain of Anys deeper than `maxNestingDepth`. Those
-  now stay as `type_url` and `value`. `PXFEncoder` on a Swift type writes every
-  Any that way, which conforms; this is now documented.
+- `PXFDecoder.decodeRows(_:of:)` binds each row of a `@dataset` as the message
+  body it stands for, list and block cells and dotted columns included
+  ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
+  [#23](https://github.com/trendvidia/protowire-swift/issues/23)).
+- **Every HARDENING limit is enforced and can be set per call**
+  ([#16](https://github.com/trendvidia/protowire-swift/issues/16)).
+  `PXFDecoder`, `PBDecoder`, `SBEUnmarshaller` and `PXF.Parser` gain a `limits`
+  property of the new `Hardening.Limits`, and `SBE.View` an init parameter. The
+  defaults are the draft's constants. `MaxMessageSize` is 64 MiB, checked before
+  the input is read, and `MaxBytesLiteralLength` and `MaxRepeatedCount` equal it.
+  A 65 MiB input used to decode. `MaxNestingDepth` and `MaxNumericLiteralDigits`
+  can now be lowered. `MaxBigFloatExponent` (16384) is new on the PB read path,
+  so a `pxf.BigFloat` past it that used to decode is now refused. `DecoderError`
+  gains four cases, so an exhaustive `switch` over it needs more arms, and
+  `nestingDepthExceeded` and `numericLiteralTooLong` gain a `limit:`, so a pattern
+  that binds their payload changes too.
+  `check-decode` takes `--limit NAME=VALUE`, and reads `ListHolder` and the
+  corpus's SBE rows.
+- **`swift test` compares this port with protowire-go over the whole spec
+  corpus** ([#45](https://github.com/trendvidia/protowire-swift/issues/45)):
+  parse verdicts, schema-bound decode verdicts, protobuf bytes and formatted text, for 250
+  documents. `conformance/README.md` explains the record, the ledger of known
+  disagreements, and how to refresh them.
+- **`PXF.Parser` reads every form in the spec's syntax corpus.** The parse leg
+  of the comparison above goes from 68 disagreements to 0.
+  - Duration literals with a fraction, `µs` or a sign, such as `1.5ms` and
+    `-312.5µs` ([#8](https://github.com/trendvidia/protowire-swift/issues/8)),
+    which is what other ports write for a measured latency. U+03BC is not a
+    unit, and a duration past 64-bit nanoseconds is an error.
+  - The type entry of an `Any` block, `@type = "..."` as a block's first entry
+    ([#22](https://github.com/trendvidia/protowire-swift/issues/22)). It is in
+    `typeURL` on `PXF.Block` and `PXF.BlockVal`, and not in `entries`.
+  - List and block cells, and dotted column paths, in a `@dataset`
+    ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
+    [#23](https://github.com/trendvidia/protowire-swift/issues/23)). A header
+    that names a path twice, a field beside a path inside it, or an empty path
+    segment is rejected at that column.
+  - `true:` and `false:` as map keys. `PXF.MapEntry.keyKind` records how a key
+    was spelled.
+  - A `p<prec>` suffix on a number stays in `IntVal.raw` / `FloatVal.raw`
+    ([#26](https://github.com/trendvidia/protowire-swift/issues/26)). No value
+    is computed from it yet.
+  - A comment on the same line, after a value, is that entry's `trailingComment`.
+  - `b"..."` accepts URL-safe and unpadded base64.
 
 ### Changed
 
@@ -195,78 +171,6 @@ lockstep across language ports when the wire format changes.
   ([#33](https://github.com/trendvidia/protowire-swift/issues/33)). It can't reject
   a bare identifier there, because a Swift enum decodes from one.
 
-### Fixed
-
-- A `[String: T]` of messages keeps its values
-  ([#28](https://github.com/trendvidia/protowire-swift/issues/28)), and a map's keys
-  can be any integer type or `Bool`.
-- An out-of-range integer throws instead of trapping the process, and a list
-  element of the wrong type throws instead of decoding as zero.
-
-### Added
-
-- `PXFDecoder.decodeRows(_:of:)` binds each row of a `@dataset` as the message
-  body it stands for, list and block cells and dotted columns included
-  ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
-  [#23](https://github.com/trendvidia/protowire-swift/issues/23)).
-- **Every HARDENING limit is enforced and can be set per call**
-  ([#16](https://github.com/trendvidia/protowire-swift/issues/16)).
-  `PXFDecoder`, `PBDecoder`, `SBEUnmarshaller` and `PXF.Parser` gain a `limits`
-  property of the new `Hardening.Limits`, and `SBE.View` an init parameter. The
-  defaults are the draft's constants. `MaxMessageSize` is 64 MiB, checked before
-  the input is read, and `MaxBytesLiteralLength` and `MaxRepeatedCount` equal it.
-  A 65 MiB input used to decode. `MaxNestingDepth` and `MaxNumericLiteralDigits`
-  can now be lowered. `MaxBigFloatExponent` (16384) is new on the PB read path,
-  so a `pxf.BigFloat` past it that used to decode is now refused. `DecoderError`
-  gains four cases, so an exhaustive `switch` over it needs more arms, and
-  `nestingDepthExceeded` and `numericLiteralTooLong` gain a `limit:`, so a pattern
-  that binds their payload changes too.
-  `check-decode` takes `--limit NAME=VALUE`, and reads `ListHolder` and the
-  corpus's SBE rows.
-- **`swift test` compares this port with protowire-go over the whole spec
-  corpus** ([#45](https://github.com/trendvidia/protowire-swift/issues/45)):
-  parse verdicts, schema-bound decode verdicts, protobuf bytes and formatted text, for 250
-  documents. `conformance/README.md` explains the record, the ledger of known
-  disagreements, and how to refresh them.
-- **`PXF.Parser` reads every form in the spec's syntax corpus.** The parse leg
-  of the comparison above goes from 68 disagreements to 0.
-  - Duration literals with a fraction, `µs` or a sign, such as `1.5ms` and
-    `-312.5µs` ([#8](https://github.com/trendvidia/protowire-swift/issues/8)),
-    which is what other ports write for a measured latency. U+03BC is not a
-    unit, and a duration past 64-bit nanoseconds is an error.
-  - The type entry of an `Any` block, `@type = "..."` as a block's first entry
-    ([#22](https://github.com/trendvidia/protowire-swift/issues/22)). It is in
-    `typeURL` on `PXF.Block` and `PXF.BlockVal`, and not in `entries`.
-  - List and block cells, and dotted column paths, in a `@dataset`
-    ([#21](https://github.com/trendvidia/protowire-swift/issues/21),
-    [#23](https://github.com/trendvidia/protowire-swift/issues/23)). A header
-    that names a path twice, a field beside a path inside it, or an empty path
-    segment is rejected at that column.
-  - `true:` and `false:` as map keys. `PXF.MapEntry.keyKind` records how a key
-    was spelled.
-  - A `p<prec>` suffix on a number stays in `IntVal.raw` / `FloatVal.raw`
-    ([#26](https://github.com/trendvidia/protowire-swift/issues/26)). No value
-    is computed from it yet.
-  - A comment on the same line, after a value, is that entry's `trailingComment`.
-  - `b"..."` accepts URL-safe and unpadded base64.
-
-### Fixed
-
-- **`PXF.Format.formatDocument` writes what `pxf fmt` writes**: the comparison's
-  format leg goes from 16 disagreements to 0. A type entry and a trailing
-  comment are kept, and strings are quoted as the reference quotes them.
-- **A map key's spelling follows draft -01 § Entries and Keys**
-  ([#18](https://github.com/trendvidia/protowire-swift/issues/18),
-  [#19](https://github.com/trendvidia/protowire-swift/issues/19)). The formatter
-  used to turn `"true":` into `true:`, which no longer binds on a string key. It
-  now keeps a key's quotes unless the key is identifier-safe, dots included, and
-  a bare key stays bare.
-- **`PXFEncoder` writes a dictionary as a map**, `by_label = { a.b: 1 }`, with
-  string keys spelled by that same rule. It used to write `a.b = 1`, and a key
-  like `my key` came out unquoted. Key order is still the dictionary's.
-
-### Changed
-
 - **`PXF.Parser` rejects what the grammar does.** A raw line feed in a simple
   string, in a `@dataset` cell too
   ([#24](https://github.com/trendvidia/protowire-swift/issues/24)); an
@@ -289,8 +193,6 @@ lockstep across language ports when the wire format changes.
   and an unknown vector exits 3 with `not-implemented: <name>`
   ([#15](https://github.com/trendvidia/protowire-swift/issues/15)).
 
-### Changed
-
 - **`PBEncoder` leaves out zero values, as protowire-go does**
   ([#14](https://github.com/trendvidia/protowire-swift/issues/14)). A
   non-optional scalar, string, bytes, list or map at zero writes nothing, so
@@ -306,12 +208,99 @@ lockstep across language ports when the wire format changes.
 
 ### Fixed
 
+- **A `pxf.Decimal` or `pxf.BigFloat` literal follows the call's limits**, as a
+  `pxf.BigInt` literal did. Read into `Pxf_Decimal` or `Pxf_BigFloat` without a
+  schema, it was bound by the `Hardening` constants, not by a lowered
+  `maxNumericLiteralDigits` or `maxBigFloatExponent`.
+- **`PBDecoder` reads a field only from a tag of its wire type, as protobuf does**
+  ([#97](https://github.com/trendvidia/protowire-swift/issues/97)). It read a field
+  by its Swift type whatever the tag said: `0a0101` on an int64 read the length byte
+  as the value 1, and `0801` on a string was refused with `nesting depth 101 exceeds
+  maximum 100`. Now wire type 6 or 7 is refused on any field, and a known field whose
+  wire type does not match its type is skipped as an unknown field and left as it was
+  (trendvidia/protowire#614). A list of numbers or enums reads both its own wire type
+  and the packed form, and a packed list cut short is refused rather than ended
+  there. A well-formed group is skipped, as protobuf skips one, where it was refused.
+  Map entries, the `pxf.BigInt`, `pxf.Decimal` and `pxf.BigFloat` messages and the
+  schema-bound reader behind the PXF text of a PB input follow the same rule. A field
+  that cannot be skipped throws the new `DecoderError.corruptField`, whose text is
+  protowire-go's: `corrupt field 1: proto: cannot parse reserved wire type`,
+  `corrupt field 3 in map entry: unexpected EOF`. `PBWireTypeTests` holds both
+  readers to protobuf-go on protowire-go's 606 inputs (`conformance/wiretype`).
+  **This accepts messages that were refused, and reads some differently.**
+- **`PBDecoder` reads a map entry that leaves out its key or value** with that part
+  at its type's zero, as protobuf does; for a message value that is the empty
+  message. It refused the entry.
+
+- **`PXF.Format.formatDocument` writes a triple-quoted `@proto` with its `"""`
+  on lines of their own** (trendvidia/protowire-go#303). It wrote the body
+  straight after the opening `"""` and straight before the closing one. Reading
+  strips a line break after the opening `"""` and drops a last line holding only
+  whitespace, so a body ending in `"` (a last line `import "x.proto"`) formatted
+  to text that does not parse, and a body's leading line break, trailing line
+  break or whitespace-only last line was lost. Now the output is `@proto """`, a
+  line break, the body, a line break and `"""`, as protowire-go writes since
+  its #306, and every body without a `"""` in it reads back byte for byte.
+- **`PXF.Format.formatDocument` keeps every directive**
+  ([#90](https://github.com/trendvidia/protowire-swift/issues/90)). It used to
+  write only `@type`, comments and entries, so a `@dataset` document formatted to
+  nothing and an `@entry`, `@proto` or named directive was lost. Now `@type` comes
+  first, then the other directives in source order, each after its comments: a
+  dataset as its header and one row per line (an absent cell empty, `null`
+  written), a named directive's body and a `@proto` body as they were read
+  (trendvidia/protowire#558). A document whose only directive is `@type` formats
+  as before. The output is byte for byte protowire-go's `FormatDocument`; the
+  conformance record now comes from protowire-go at that fix (`ecd900a`), which
+  changes the format rows of 29 dataset documents.
+- **`PBEncoder` writes a nil list element or map value as its type's zero value**
+  ([#64](https://github.com/trendvidia/protowire-swift/issues/64)), the empty message
+  for a message type. It used to drop the element, shortening the list, and to write
+  the entry without its value field. **The bytes change** for a list or map of
+  Optionals that holds a nil.
+- **`PXFEncoder` writes what the reference writes**, and `ConformanceTests` now
+  compares its text with `pxf.Marshal` over the corpus. Lists were invalid text and
+  now round-trip ([#32](https://github.com/trendvidia/protowire-swift/issues/32)). A
+  nested `_null` path is written inside its own block, not as a dotted root entry
+  ([#42](https://github.com/trendvidia/protowire-swift/issues/42)). **The text
+  changes for existing types:** nested messages are `name { ... }` rather than
+  `name = { ... }`, lists are one element per line, map keys are sorted, an empty list
+  or map is left out unless `emitDefaults` is set, floats use Go's `%g` spelling,
+  and a timestamp has no trailing zeros. With a schema, an enum's name is written bare.
+- `Protowire.consumeFixed32`, `consumeFixed64` and `SBE.readHeader` read a `Data`
+  slice at any offset. They trapped on a misaligned one.
+- **An Any is written as `@type` and a body only when the body reads back as the
+  same bytes** ([#63](https://github.com/trendvidia/protowire-swift/issues/63),
+  protowire#501). The schema-bound marshaller that `ConformanceTests` compares
+  wrote a body for any value that parsed, which changed a value holding unknown
+  fields, fields or map entries out of order, explicit zeros, a Timestamp past
+  year 9999, or an unset `(pxf.default)` or `(pxf.required)` field. It also
+  wrote unreadable text for a chain of Anys deeper than `maxNestingDepth`. Those
+  now stay as `type_url` and `value`. `PXFEncoder` on a Swift type writes every
+  Any that way, which conforms; this is now documented.
+
+- A `[String: T]` of messages keeps its values
+  ([#28](https://github.com/trendvidia/protowire-swift/issues/28)), and a map's keys
+  can be any integer type or `Bool`.
+- An out-of-range integer throws instead of trapping the process, and a list
+  element of the wrong type throws instead of decoding as zero.
+
+- **`PXF.Format.formatDocument` writes what `pxf fmt` writes**: the comparison's
+  format leg goes from 16 disagreements to 0. A type entry and a trailing
+  comment are kept, and strings are quoted as the reference quotes them.
+- **A map key's spelling follows draft -01 § Entries and Keys**
+  ([#18](https://github.com/trendvidia/protowire-swift/issues/18),
+  [#19](https://github.com/trendvidia/protowire-swift/issues/19)). The formatter
+  used to turn `"true":` into `true:`, which no longer binds on a string key. It
+  now keeps a key's quotes unless the key is identifier-safe, dots included, and
+  a bare key stays bare.
+- **`PXFEncoder` writes a dictionary as a map**, `by_label = { a.b: 1 }`, with
+  string keys spelled by that same rule. It used to write `a.b = 1`, and a key
+  like `my key` came out unquoted. Key order is still the dictionary's.
+
 - `PBEncoder` throws on a field number too wide for an `Int32`, where it
   trapped. `PBDecoder` throws on a varint too wide for an
   `Int32` or narrower field, where it trapped. Lists of `UInt32`, `UInt16`,
   `UInt8`, `Int16` and `Int8` no longer overflow the stack.
-
-### Fixed
 
 - **SBE decoding refuses what the bytes can't hold**
   ([#16](https://github.com/trendvidia/protowire-swift/issues/16)). A wire block
