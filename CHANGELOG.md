@@ -66,6 +66,16 @@ lockstep across language ports when the wire format changes.
 
 ### Changed
 
+- **A `@proto` source body must be triple-quoted**
+  ([#100](https://github.com/trendvidia/protowire-swift/issues/100),
+  trendvidia/protowire-go#305). `PXF.Parser`, and so every `PXFDecoder` decode,
+  read a simple-quoted `@proto "…"` as a source body, which the grammar does not
+  admit (`proto_source_body = triple_string`). Its escapes could put `"""` in the
+  body, and `PXF.Format.formatDocument` then wrote text that does not parse. Now
+  it is refused with `[1:8] @proto source body must be a triple-quoted string
+  ("""...""")`, protowire-go's text. The descriptor form, `@proto b"…"`, is
+  unchanged. A hand-built `ProtoDirective` whose body holds `"""` still formats to
+  text that does not parse, and its docs say so.
 - **`PXFEncoder` and `PBEncoder` refuse a value nested deeper than
   `MaxNestingDepth`** ([#62](https://github.com/trendvidia/protowire-swift/issues/62),
   protowire#502), rather than write output a decoder at the same limit refuses.
