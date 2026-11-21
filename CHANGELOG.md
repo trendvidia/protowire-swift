@@ -47,6 +47,15 @@ lockstep across language ports when the wire format changes.
   at its type's zero, as protobuf does; for a message value that is the empty
   message. It refused the entry.
 
+- **`PXF.Format.formatDocument` writes a triple-quoted `@proto` with its `"""`
+  on lines of their own** (trendvidia/protowire-go#303). It wrote the body
+  straight after the opening `"""` and straight before the closing one. Reading
+  strips a line break after the opening `"""` and drops a last line holding only
+  whitespace, so a body ending in `"` (a last line `import "x.proto"`) formatted
+  to text that does not parse, and a body's leading line break, trailing line
+  break or whitespace-only last line was lost. Now the output is `@proto """`, a
+  line break, the body, a line break and `"""`, as protowire-go writes since
+  its #306, and every body without a `"""` in it reads back byte for byte.
 - **`PXF.Format.formatDocument` keeps every directive**
   ([#90](https://github.com/trendvidia/protowire-swift/issues/90)). It used to
   write only `@type`, comments and entries, so a `@dataset` document formatted to
@@ -86,6 +95,31 @@ lockstep across language ports when the wire format changes.
 
 ### Changed
 
+- **`PXFEncoder` leaves out zero values, as `pxf.Marshal` does**
+  ([#58](https://github.com/trendvidia/protowire-swift/issues/58)), the rule
+  `PBEncoder` follows since #14. A non-optional scalar, string, bytes, bool or
+  enum at zero is no longer written, so **the text changes** for any such
+  field. An `Optional` holding a value is written even at zero; a non-optional
+  message is always written. `emitDefaults` writes the zeros back, and also a
+  nil `Optional` scalar as its zero, as the reference's `EmitDefaults` does.
+  A zero left out of a field with `(pxf.default)` reads back as the default
+  under a schema-aware decode, as in the reference
+  ([protowire-go#259](https://github.com/trendvidia/protowire-go/issues/259)).
+- **`PXFDecoder` reads an absent field as zero** for a non-optional scalar,
+  string, bytes, bool, integer-backed enum, list or map property, where it
+  used to throw `keyNotFound`. The text `PXFEncoder` writes now round-trips.
+- Under `emitDefaults`, `PXFEncoder` writes an empty list as `[` and `]` on
+  lines of their own, as the reference does, not as `[]`.
+- **A `@proto` source body must be triple-quoted**
+  ([#100](https://github.com/trendvidia/protowire-swift/issues/100),
+  trendvidia/protowire-go#305). `PXF.Parser`, and so every `PXFDecoder` decode,
+  read a simple-quoted `@proto "…"` as a source body, which the grammar does not
+  admit (`proto_source_body = triple_string`). Its escapes could put `"""` in the
+  body, and `PXF.Format.formatDocument` then wrote text that does not parse. Now
+  it is refused with `[1:8] @proto source body must be a triple-quoted string
+  ("""...""")`, protowire-go's text. The descriptor form, `@proto b"…"`, is
+  unchanged. A hand-built `ProtoDirective` whose body holds `"""` still formats to
+  text that does not parse, and its docs say so.
 - **`PXFEncoder` and `PBEncoder` refuse a value nested deeper than
   `MaxNestingDepth`** ([#62](https://github.com/trendvidia/protowire-swift/issues/62),
   protowire#502), rather than write output a decoder at the same limit refuses.

@@ -201,6 +201,24 @@ final class PXFAnnotationsTests: XCTestCase {
         XCTAssertEqual(s.verbose, true)
     }
 
+    /// The accepted cost of leaving zeros out (#58): `PXFEncoder` has no
+    /// schema, so it leaves out `retries = 0` although `retries` has
+    /// `(pxf.default) = "3"`, and a schema-aware decode then reads 3.
+    /// protowire-go's `pxf.Marshal` does the same (protowire-go#259). If this
+    /// starts failing, the encoder writes such a zero now: check #58 and
+    /// protowire-go#259 before changing the expectation.
+    func testAZeroLeftOutReadsBackAsTheDefault_58_protowireGo259() throws {
+        struct Strict: Codable { var name: String; var retries: Int32 }
+        let text = try PXFEncoder().encode(Strict(name: "svc", retries: 0))
+        XCTAssertEqual(text, "name = \"svc\"\n")
+        XCTAssertEqual(try decoder().decode(Strict.self, from: text).retries, 3)
+        // An Optional keeps the zero: it is written, and reads back as 0.
+        struct Kept: Codable { var name: String; var retries: Int32? }
+        let kept = try PXFEncoder().encode(Kept(name: "svc", retries: 0))
+        XCTAssertEqual(kept, "name = \"svc\"\nretries = 0\n")
+        XCTAssertEqual(try decoder().decode(Kept.self, from: kept).retries, 0)
+    }
+
     func testBadDefaultLiteralIsItsOwnError() {
         let decoder = PXFDecoder(annotations: Self.annotations, rootMessage: "settings.v1.BadDefault")
         XCTAssertThrowsError(try decoder.decode(BadDefault.self, from: "")) { error in
