@@ -66,6 +66,21 @@ lockstep across language ports when the wire format changes.
 
 ### Changed
 
+- **`PXFEncoder` leaves out zero values, as `pxf.Marshal` does**
+  ([#58](https://github.com/trendvidia/protowire-swift/issues/58)), the rule
+  `PBEncoder` follows since #14. A non-optional scalar, string, bytes, bool or
+  enum at zero is no longer written, so **the text changes** for any such
+  field. An `Optional` holding a value is written even at zero; a non-optional
+  message is always written. `emitDefaults` writes the zeros back, and also a
+  nil `Optional` scalar as its zero, as the reference's `EmitDefaults` does.
+  A zero left out of a field with `(pxf.default)` reads back as the default
+  under a schema-aware decode, as in the reference
+  ([protowire-go#259](https://github.com/trendvidia/protowire-go/issues/259)).
+- **`PXFDecoder` reads an absent field as zero** for a non-optional scalar,
+  string, bytes, bool, integer-backed enum, list or map property, where it
+  used to throw `keyNotFound`. The text `PXFEncoder` writes now round-trips.
+- Under `emitDefaults`, `PXFEncoder` writes an empty list as `[` and `]` on
+  lines of their own, as the reference does, not as `[]`.
 - **A `@proto` source body must be triple-quoted**
   ([#100](https://github.com/trendvidia/protowire-swift/issues/100),
   trendvidia/protowire-go#305). `PXF.Parser`, and so every `PXFDecoder` decode,
