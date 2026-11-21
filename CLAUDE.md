@@ -36,7 +36,7 @@ test target. Sources are flat under `Sources/Protowire/`:
 - `PXF_BigNum.swift` — the generated `Pxf_BigInt` / `Pxf_Decimal` /
   `Pxf_BigFloat` as Codable, and the big-number literal readers and writers.
 - `PXF_Numbers.swift` — `PXF.BigInt`, `PXF.Decimal`, `PXF.BigFloat`: the
-  language values for those messages (design call 11), on `BigUInt`
+  language values for those messages (design call 12), on `BigUInt`
   (`PXF_BigUInt.swift`, internal).
 - `SBE.swift`, `SBE_Codec.swift`, `SBE_Template.swift`, `SBE_View.swift`
   — SBE primitives + dictionary codec + zero-copy reader.
@@ -155,7 +155,17 @@ record with `conformance/update.sh`.
    type through `_PBLimited`. A list's or map's count is checked by the
    parser as it reads, and across bindings by `PXF.checkRepeatedCounts`.
 
-11. **A big number is a message or a language value, and the two are written
+11. **Both encoders leave out a zero, and both decoders read it back.**
+   `PBEncoder` (#14) and `PXFEncoder` (#58) leave out a non-optional field at
+   its zero, as protowire-go does, and write an `Optional` holding a zero:
+   that is how a type marks proto3 `optional`. `PXFEncoder` marks such a field
+   `PXFNode.implicit`, and the renderer drops it at zero unless `emitDefaults`
+   is set. `PBDecoder` and `PXFDecoder` read an absent non-optional field as
+   zero. A `BoundText` item is a struct, so it is never marked: a bound
+   message decides presence itself. The cost: a zero left out reads back as
+   the field's `(pxf.default)` under a schema (protowire-go#259).
+
+12. **A big number is a message or a language value, and the two are written
    differently.** The draft (§ PXF Annotations) says a producer writing a
    message's fields writes them as they are, and one writing a language value
    writes the reduced form. So `Pxf_Decimal` and its siblings are written as

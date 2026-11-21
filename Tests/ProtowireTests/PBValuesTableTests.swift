@@ -127,10 +127,7 @@ final class PBValuesTableTests: XCTestCase {
     /// Rows this port does not write as protowire-go does, each with the
     /// issue that tracks it. A pinned row that starts to match fails, so the
     /// fix has to remove it here.
-    private let divergences: [String: String] = [
-        // No way to mark a field sint32 / sint64.
-        "Zigzag": "#70",
-    ]
+    private let divergences: [String: String] = [:]
 
     private struct Row { var name: String; var hex: String; var value: String }
 
