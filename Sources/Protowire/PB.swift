@@ -329,6 +329,59 @@ public final class PBDecoder {
     }
 }
 
+/// A field's record on the wire: the wire type its tag gives, and its value.
+private struct PBRecord {
+    let wire: Protowire.WireType
+    let data: Data
+}
+
+/// The wire types a field of a Swift type is read from (#97,
+/// trendvidia/protowire#614): the one `PBEncoder` writes it with and, for a
+/// list of numbers, the packed form. A record with any other wire type is
+/// not that field's value, so it is skipped as protobuf skips an unknown
+/// field, and the field is left as it was.
+private struct PBWireTypes {
+    let wire: Protowire.WireType
+    let packed: Bool
+
+    init(_ t: Any.Type) {
+        if !(t is Data.Type), let at = t as? _PBArray.Type {
+            wire = pbWireType(of: at.elementType)
+            packed = wire != .bytes
+        } else {
+            wire = pbWireType(of: t)
+            packed = false
+        }
+    }
+
+    func accepts(_ w: Protowire.WireType) -> Bool { w == wire || (packed && w == .bytes) }
+}
+
+/// The wire type a single value of `t` is written with. A type this does
+/// not name is a message, written length-delimited, as are a list or a map.
+private func pbWireType(of t: Any.Type) -> Protowire.WireType {
+    switch t {
+    case is Data.Type, is String.Type: return .bytes
+    case is Bool.Type, is Int.Type, is Int8.Type, is Int16.Type, is Int32.Type, is Int64.Type,
+         is UInt.Type, is UInt8.Type, is UInt16.Type, is UInt32.Type, is UInt64.Type,
+         is SInt32.Type, is SInt64.Type: return .varint
+    case is Float.Type: return .fixed32
+    case is Double.Type: return .fixed64
+    case let o as _PBDecodableOptional.Type: return pbWireType(of: o.pbDecodableWrappedType)
+    // An enum, as the encoder's `writeZero` takes it: its raw value's.
+    case let r as any RawRepresentable.Type: return pbWireType(of: rawValueType(r))
+    default: return .bytes
+    }
+}
+
+private func rawValueType<R: RawRepresentable>(_: R.Type) -> Any.Type { R.RawValue.self }
+
+/// An `Optional` read for its wrapped type: a list element or map value.
+protocol _PBDecodableOptional { static var pbDecodableWrappedType: Decodable.Type { get } }
+extension Optional: _PBDecodableOptional where Wrapped: Decodable {
+    static var pbDecodableWrappedType: Decodable.Type { Wrapped.self }
+}
+
 private final class _PBDecoder: Decoder, _PBLimited {
     var codingPath: [CodingKey] = []; var userInfo: [CodingUserInfoKey: Any] = [:]
     let data: Data
@@ -336,10 +389,12 @@ private final class _PBDecoder: Decoder, _PBLimited {
     let limits: Hardening.Limits
     /// Stands in for a field absent from the wire: every value reads as zero.
     let absent: Bool
-    private var _fields: [Int32: [Data]]?
+    /// Where a corrupt field sits, for its error: " in map entry", " in BigInt".
+    let context: String
+    private var _fields: [Int32: [PBRecord]]?
     private var _fieldsError: Error?
 
-    init(data: Data, depth: Int = 0, limits: Hardening.Limits, absent: Bool = false) throws {
+    init(data: Data, depth: Int = 0, limits: Hardening.Limits, absent: Bool = false, context: String = "") throws {
         if depth > limits.maxNestingDepth {
             throw DecoderError.nestingDepthExceeded(depth, limit: limits.maxNestingDepth)
         }
@@ -347,6 +402,7 @@ private final class _PBDecoder: Decoder, _PBLimited {
         self.depth = depth
         self.limits = limits
         self.absent = absent
+        self.context = context
     }
 
     /// The value of a field the wire does not carry: proto3 omits zeros, so
@@ -361,11 +417,11 @@ private final class _PBDecoder: Decoder, _PBLimited {
     /// Lazily walks the buffer once, caching either the field map or the
     /// parse error. `fieldsError` exposes the latter so throwing entry points
     /// can surface truncation rather than silently treating it as "field absent".
-    private var fields: [Int32: [Data]] {
+    private var fields: [Int32: [PBRecord]] {
         if let f = _fields { return f }
         if _fieldsError != nil { return [:] }
         do {
-            let f = try Self.parseFields(data)
+            let f = try Self.parseFields(data, context: context)
             _fields = f
             return f
         } catch {
@@ -379,22 +435,38 @@ private final class _PBDecoder: Decoder, _PBLimited {
         return _fieldsError
     }
 
-    private static func parseFields(_ data: Data) throws -> [Int32: [Data]] {
-        var f: [Int32: [Data]] = [:]
-        var rem = data
-        while !rem.isEmpty {
-            guard let (tag, wire, n) = Protowire.consumeTag(rem) else {
+    /// Splits the message into its records, each checked the way protobuf
+    /// skips an unknown field: a value cut short, wire type 6 or 7, or an
+    /// end-group that ends nothing is corrupt, whichever field it is on.
+    private static func parseFields(_ data: Data, context: String) throws -> [Int32: [PBRecord]] {
+        var f: [Int32: [PBRecord]] = [:]
+        var i = data.startIndex
+        while i < data.endIndex {
+            guard let (number, wire, valueStart) = try? PB.readTag(data, at: i),
+                  number <= Protowire.maxValidNumber else {
                 throw PB.Error.corruptData
             }
-            rem = rem.advanced(by: n)
-            let len = consumeFieldValue(tag: tag, wireType: wire, data: rem)
-            guard len >= 0 else {
-                throw PB.Error.corruptData
+            let end: Data.Index
+            do {
+                end = try PB.skipValue(number: number, wire: wire, data, at: valueStart)
+            } catch let failure as PB.SkipFailure {
+                throw DecoderError.corruptField(number: number, reason: failure.rawValue, context: context)
             }
-            f[tag, default: []].append(Data(rem.prefix(len)))
-            rem = rem.advanced(by: len)
+            // Wire types 0 to 5 are all that is left; a group is kept and
+            // read by no type.
+            if let w = Protowire.WireType(rawValue: Int8(wire)) {
+                f[number, default: []].append(PBRecord(wire: w, data: Data(data[valueStart..<end])))
+            }
+            i = end
         }
         return f
+    }
+
+    /// The records of field `number` that a value of type `t` is read from.
+    func records(_ number: Int32, for t: Any.Type) -> [PBRecord] {
+        guard let all = fields[number] else { return [] }
+        let accepted = PBWireTypes(t)
+        return all.filter { accepted.accepts($0.wire) }
     }
 
     func container<K>(keyedBy t: K.Type) -> KeyedDecodingContainer<K> { return KeyedDecodingContainer(KeyedContainer<K>(decoder: self)) }
@@ -404,45 +476,61 @@ private final class _PBDecoder: Decoder, _PBLimited {
     }
     func singleValueContainer() throws -> SingleValueDecodingContainer { return self }
 
-    func decodeAny(_ type: Any.Type, from data: Data) throws -> Any {
-        guard let (v, _) = try decodeOne(type, from: data) else { throw PB.Error.corruptData }
+    func decodeAny(_ type: Any.Type, from record: PBRecord) throws -> Any {
+        guard let (v, _) = try decodeOne(type, from: record.data, wire: record.wire) else { throw PB.Error.corruptData }
         return v
     }
 
-    func decodeOne(_ type: Any.Type, from data: Data) throws -> (Any, Int)? {
-        if type is Data.Type { if let (v, n) = Protowire.consumeBytes(data) { return (v, n) } }
-        if type is String.Type { if let (v, n) = Protowire.consumeString(data) { return (v, n) } }
-        if type is Bool.Type { if let (v, n) = Protowire.consumeVarint(data) { return (v != 0, n) } }
-        if type is Int.Type { if let (v, n) = Protowire.consumeVarint(data) { return (Int(Int64(bitPattern: v)), n) } }
-        if type is Int8.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(Int8(exactly: Int64(bitPattern: v))), n) } }
-        if type is Int16.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(Int16(exactly: Int64(bitPattern: v))), n) } }
-        if type is Int32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(Int32(exactly: Int64(bitPattern: v))), n) } }
-        if type is Int64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (Int64(bitPattern: v), n) } }
-        if type is UInt.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt(exactly: v)), n) } }
-        if type is UInt8.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt8(exactly: v)), n) } }
-        if type is UInt16.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt16(exactly: v)), n) } }
-        if type is UInt32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (try narrow(UInt32(exactly: v)), n) } }
-        if type is UInt64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (v, n) } }
-        if type is Float.Type { if let (v, n) = Protowire.consumeFixed32(data) { return (Float(bitPattern: v), n) } }
-        if type is Double.Type { if let (v, n) = Protowire.consumeFixed64(data) { return (Double(bitPattern: v), n) } }
-        // A zigzag varint too wide for sint32 is an error, as for int32.
-        if type is SInt32.Type { if let (v, n) = Protowire.consumeVarint(data) { return (SInt32(try narrow(Int32(exactly: Protowire.decodeZigZag(v)))), n) } }
-        if type is SInt64.Type { if let (v, n) = Protowire.consumeVarint(data) { return (SInt64(Protowire.decodeZigZag(v)), n) } }
-
-        if let decType = type as? Decodable.Type {
-            if let (bytes, n) = Protowire.consumeBytes(data) {
-                let sub = try _PBDecoder(data: bytes, depth: depth + 1, limits: limits)
-                return (try decType.init(from: sub), n)
-            }
-            if let (_, n) = Protowire.consumeVarint(data) {
-                let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1, limits: limits)
-                return (try decType.init(from: sub), n)
-            }
+    /// One value of `type` at the start of `data`, which a record of `wire`
+    /// holds, and the bytes it took; nil if the bytes are not one.
+    func decodeOne(_ type: Any.Type, from data: Data, wire: Protowire.WireType) throws -> (Any, Int)? {
+        switch type {
+        case is Data.Type: return Protowire.consumeBytes(data).map { ($0.value, $0.length) }
+        case is String.Type: return Protowire.consumeString(data).map { ($0.value, $0.length) }
+        case is Float.Type: return Protowire.consumeFixed32(data).map { (Float(bitPattern: $0.value), $0.length) }
+        case is Double.Type: return Protowire.consumeFixed64(data).map { (Double(bitPattern: $0.value), $0.length) }
+        case is Bool.Type, is Int.Type, is Int8.Type, is Int16.Type, is Int32.Type, is Int64.Type,
+             is UInt.Type, is UInt8.Type, is UInt16.Type, is UInt32.Type, is UInt64.Type,
+             is SInt32.Type, is SInt64.Type:
+            guard let (v, n) = Protowire.consumeVarint(data) else { return nil }
+            return (try integer(type, v), n)
+        case let o as _PBDecodableOptional.Type:
+            return try decodeOne(o.pbDecodableWrappedType, from: data, wire: wire)
+        case let decType as any (Decodable & RawRepresentable).Type:
+            // An enum reads its raw value from the record's own bytes.
+            guard let end = try? PB.skipValue(number: 1, wire: UInt8(wire.rawValue), data, at: data.startIndex) else { return nil }
+            let n = end - data.startIndex
+            let sub = try _PBDecoder(data: data.prefix(n), depth: depth + 1, limits: limits)
+            return (try decType.init(from: sub), n)
+        case let decType as Decodable.Type:
+            guard wire == .bytes, let (bytes, n) = Protowire.consumeBytes(data) else { return nil }
+            let sub = try _PBDecoder(data: bytes, depth: depth + 1, limits: limits, context: messageContext(type))
+            return (try decType.init(from: sub), n)
+        default:
+            return nil
         }
-        return nil
     }
 
-    /// A varint too wide for the Swift type is an error, never a trap.
+    /// A varint as `type`. One too wide for the Swift type is an error, never
+    /// a trap, and a zigzag one too wide for sint32 is too, as for int32.
+    private func integer(_ type: Any.Type, _ v: UInt64) throws -> Any {
+        switch type {
+        case is Bool.Type: return v != 0
+        case is Int.Type: return Int(Int64(bitPattern: v))
+        case is Int8.Type: return try narrow(Int8(exactly: Int64(bitPattern: v)))
+        case is Int16.Type: return try narrow(Int16(exactly: Int64(bitPattern: v)))
+        case is Int32.Type: return try narrow(Int32(exactly: Int64(bitPattern: v)))
+        case is Int64.Type: return Int64(bitPattern: v)
+        case is UInt.Type: return try narrow(UInt(exactly: v))
+        case is UInt8.Type: return try narrow(UInt8(exactly: v))
+        case is UInt16.Type: return try narrow(UInt16(exactly: v))
+        case is UInt32.Type: return try narrow(UInt32(exactly: v))
+        case is SInt32.Type: return SInt32(try narrow(Int32(exactly: Protowire.decodeZigZag(v))))
+        case is SInt64.Type: return SInt64(Protowire.decodeZigZag(v))
+        default: return v
+        }
+    }
+
     private func narrow<T>(_ v: T?) throws -> T {
         guard let v else { throw PB.Error.corruptData }
         return v
@@ -463,12 +551,18 @@ private final class _PBDecoder: Decoder, _PBLimited {
             if let err = decoder.fieldsError { throw err }
             return !contains(k)
         }
+
+        /// The field's records that a `t` is read from. Records of another
+        /// wire type are skipped, so a field with only those is absent.
+        private func records(_ t: Any.Type, _ k: Key) throws -> [PBRecord] {
+            if let err = decoder.fieldsError { throw err }
+            guard let n = k.intValue else { throw PB.Error.corruptData }
+            return decoder.records(Int32(n), for: t)
+        }
         /// A scalar field, which reads as `zero` when it is not on the wire.
         private func scalar<T>(_ t: T.Type, _ k: Key, zero: T) throws -> T {
-            if let err = decoder.fieldsError { throw err }
-            guard k.intValue != nil else { throw PB.Error.corruptData }
-            guard contains(k) else { return zero }
-            return try decoder.decodeAny(t, from: try getData(k)) as! T
+            guard let last = try records(t, k).last else { return zero }
+            return try decoder.decodeAny(t, from: last) as! T
         }
         func decode(_ t: Bool.Type, forKey k: Key) throws -> Bool { try scalar(t, k, zero: false) }
         func decode(_ t: String.Type, forKey k: Key) throws -> String { try scalar(t, k, zero: "") }
@@ -485,54 +579,66 @@ private final class _PBDecoder: Decoder, _PBLimited {
         func decode(_ t: Float.Type, forKey k: Key) throws -> Float { try scalar(t, k, zero: 0) }
         func decode(_ t: Double.Type, forKey k: Key) throws -> Double { try scalar(t, k, zero: 0) }
 
-        func decodeIfPresent<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? {
-            if let err = decoder.fieldsError { throw err }
-            return contains(k) ? try decode(t, forKey: k) : nil
+        // An Optional property is nil unless a record of its wire type is
+        // there. The stdlib's defaults would ask `contains`, which cannot
+        // tell a skipped record from a read one.
+        private func present<T>(_ t: T.Type, _ k: Key, _ read: () throws -> T) throws -> T? {
+            try records(t, k).isEmpty ? nil : try read()
         }
+        func decodeIfPresent(_ t: Bool.Type, forKey k: Key) throws -> Bool? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: String.Type, forKey k: Key) throws -> String? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Int.Type, forKey k: Key) throws -> Int? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Int8.Type, forKey k: Key) throws -> Int8? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Int16.Type, forKey k: Key) throws -> Int16? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Int32.Type, forKey k: Key) throws -> Int32? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Int64.Type, forKey k: Key) throws -> Int64? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: UInt.Type, forKey k: Key) throws -> UInt? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: UInt8.Type, forKey k: Key) throws -> UInt8? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: UInt16.Type, forKey k: Key) throws -> UInt16? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: UInt32.Type, forKey k: Key) throws -> UInt32? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: UInt64.Type, forKey k: Key) throws -> UInt64? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Float.Type, forKey k: Key) throws -> Float? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent(_ t: Double.Type, forKey k: Key) throws -> Double? { try present(t, k) { try decode(t, forKey: k) } }
+        func decodeIfPresent<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? { try present(t, k) { try decode(t, forKey: k) } }
 
         func decode<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T {
-            if let err = decoder.fieldsError { throw err }
-            guard let n = k.intValue else { throw DecodingError.keyNotFound(k, .init(codingPath: codingPath, debugDescription: "")) }
-            guard let dl = decoder.fields[Int32(n)] else { return try decoder.zero(t) }
+            let rs = try records(t, k)
+            guard let last = rs.last else { return try decoder.zero(t) }
             if let at = T.self as? _PBArray.Type {
+                let element = pbWireType(of: at.elementType)
                 var elements: [Any] = []
-                for d in dl {
-                    if isPackable(at.elementType) {
-                        if let (payload, _) = Protowire.consumeBytes(d) {
-                            var rem = payload
-                            while !rem.isEmpty {
-                                if let (val, n) = try decoder.decodeOne(at.elementType, from: rem) {
-                                    try decoder.limits.checkRepeated(count: elements.count)
-                                    elements.append(val); rem = rem.advanced(by: n)
-                                } else { break }
+                for r in rs {
+                    if r.wire == .bytes && element != .bytes {
+                        // The packed form: the elements back to back, each
+                        // of which must be whole.
+                        var rem = Protowire.consumeBytes(r.data)?.value ?? Data()
+                        while !rem.isEmpty {
+                            guard let (val, n) = try decoder.decodeOne(at.elementType, from: rem, wire: element) else {
+                                throw PB.Error.corruptData
                             }
-                        } else {
                             try decoder.limits.checkRepeated(count: elements.count)
-                            elements.append(try decoder.decodeAny(at.elementType, from: d))
+                            elements.append(val); rem = rem.advanced(by: n)
                         }
                     } else {
                         try decoder.limits.checkRepeated(count: elements.count)
-                        elements.append(try decoder.decodeAny(at.elementType, from: d))
+                        elements.append(try decoder.decodeAny(at.elementType, from: r))
                     }
                 }
                 return at.init(elements: elements) as! T
             }
             if let mt = T.self as? _PBMap.Type {
                 var es: [(Any, Any)] = []
-                for d in dl {
+                for r in rs {
                     try decoder.limits.checkRepeated(count: es.count)
-                    let eb = Protowire.consumeBytes(d)?.value ?? Data()
-                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1, limits: decoder.limits)
-                    let key = try sub.decodeAny(mt.keyType, from: try sub.getData(tag: 1))
-                    let val = try sub.decodeAny(mt.valueType, from: try sub.getData(tag: 2))
-                    es.append((key, val))
+                    let eb = Protowire.consumeBytes(r.data)?.value ?? Data()
+                    let sub = try _PBDecoder(data: eb, depth: decoder.depth + 1, limits: decoder.limits, context: " in map entry")
+                    es.append((try sub.entryPart(1, mt.keyType), try sub.entryPart(2, mt.valueType)))
                 }
                 return mt.init(entries: es) as! T
             }
-            return try decoder.decodeAny(T.self, from: dl.last!) as! T
+            return try decoder.decodeAny(T.self, from: last) as! T
         }
 
-        func getData(_ k: Key) throws -> Data { guard let n = k.intValue else { throw PB.Error.corruptData }; return try decoder.getData(tag: Int32(n)) }
         func nestedContainer<N: CodingKey>(keyedBy t: N.Type, forKey k: Key) throws -> KeyedDecodingContainer<N> {
             throw DecodingError.dataCorrupted(.init(codingPath: codingPath + [k],
                 debugDescription: "PB: nested keyed containers are decoded inline; this entry point is unused"))
@@ -545,16 +651,35 @@ private final class _PBDecoder: Decoder, _PBLimited {
         func superDecoder(forKey k: Key) throws -> Decoder { decoder }
     }
 
-    func getData(tag: Int32) throws -> Data {
+    /// A map entry's key (1) or value (2). One the entry does not carry, or
+    /// carries with another wire type, is its type's zero, as protobuf reads
+    /// it: for a message, the empty one.
+    func entryPart(_ tag: Int32, _ type: Decodable.Type) throws -> Any {
         if let err = fieldsError { throw err }
-        guard let d = fields[tag]?.last else { throw PB.Error.corruptData }
-        return d
+        guard let r = records(tag, for: type).last else { return try zero(type) }
+        return try decodeAny(type, from: r)
+    }
+}
+
+/// Where a big-number message's corrupt field sits, as protowire-go names it.
+private func messageContext(_ t: Any.Type) -> String {
+    switch t {
+    case is Pxf_BigInt.Type: return " in BigInt"
+    case is Pxf_Decimal.Type: return " in Decimal"
+    case is Pxf_BigFloat.Type: return " in BigFloat"
+    default: return ""
     }
 }
 
 extension _PBDecoder: SingleValueDecodingContainer {
     func decodeNil() -> Bool { false }
-    private func value<T>(_ t: T.Type, zero: T) throws -> T { absent ? zero : try decodeAny(t, from: data) as! T }
+    /// The value this decoder holds whole: an enum's raw value, or the one
+    /// value a single-value type writes into its message.
+    private func value<T>(_ t: T.Type, zero: T) throws -> T {
+        if absent { return zero }
+        guard let (v, _) = try decodeOne(t, from: data, wire: pbWireType(of: t)) else { throw PB.Error.corruptData }
+        return v as! T
+    }
     func decode(_ t: Bool.Type) throws -> Bool { try value(t, zero: false) }
     func decode(_ t: String.Type) throws -> String { try value(t, zero: "") }
     func decode(_ t: Double.Type) throws -> Double { try value(t, zero: 0) }
@@ -572,16 +697,87 @@ extension _PBDecoder: SingleValueDecodingContainer {
     func decode<T: Decodable>(_ t: T.Type) throws -> T { return try T(from: self) }
 }
 
-private func consumeFieldValue(tag: Int32, wireType: Protowire.WireType, data: Data) -> Int {
-    switch wireType {
-    case .varint: return Protowire.consumeVarint(data)?.length ?? -1
-    // Bounded like the varint and bytes cases: a fixed field cut short at the
-    // end of the input is corrupt, not 4 or 8 bytes to skip past the end
-    // (trendvidia/protowire-swift#98).
-    case .fixed64: return Protowire.consumeFixed64(data)?.length ?? -1
-    case .fixed32: return Protowire.consumeFixed32(data)?.length ?? -1
-    case .bytes: return Protowire.consumeBytes(data)?.length ?? -1
-    default: return -1
+// MARK: - Skipping a field, as protobuf does
+
+extension PB {
+    /// Why a field's value cannot be skipped, in protobuf-go's words
+    /// (`protowire.ParseError`), so the error reads as protowire-go's does.
+    enum SkipFailure: String, Swift.Error {
+        case truncated = "unexpected EOF"
+        case fieldNumber = "proto: invalid field number"
+        case overflow = "proto: variable length integer overflow"
+        case reserved = "proto: cannot parse reserved wire type"
+        case endGroup = "proto: mismatching end group marker"
+        case tooDeep = "proto: parse error"
+    }
+
+    /// How deep groups nest inside one skipped group, as protobuf-go's
+    /// `protowire.ConsumeFieldValue` allows (`DefaultRecursionLimit`).
+    static let maxGroupDepth = 10_000
+
+    /// A varint at `i`, as protobuf-go's `ConsumeVarint` reads one: at most
+    /// ten bytes, the tenth no more than 1.
+    static func readVarint(_ d: Data, at i: Data.Index) throws -> (value: UInt64, end: Data.Index) {
+        var v: UInt64 = 0
+        var j = i
+        for k in 0..<9 {
+            guard j < d.endIndex else { throw SkipFailure.truncated }
+            let b = d[j]
+            j += 1
+            v |= UInt64(b & 0x7f) << (7 * k)
+            if b < 0x80 { return (v, j) }
+        }
+        guard j < d.endIndex else { throw SkipFailure.truncated }
+        guard d[j] < 2 else { throw SkipFailure.overflow }
+        return (v | UInt64(d[j]) << 63, j + 1)
+    }
+
+    /// A tag at `i`, as protobuf-go's `ConsumeTag` reads one: any wire type,
+    /// and a field number from 1 to `Int32.max`.
+    static func readTag(_ d: Data, at i: Data.Index) throws -> (number: Int32, wire: UInt8, end: Data.Index) {
+        let (v, end) = try readVarint(d, at: i)
+        guard let number = Int32(exactly: v >> 3), number >= 1 else { throw SkipFailure.fieldNumber }
+        return (number, UInt8(v & 7), end)
+    }
+
+    /// The end of field `number`'s value, which starts at `i`, found as
+    /// protobuf-go's `ConsumeFieldValue` finds it: wire types 6 and 7, an
+    /// end-group that ends nothing or another group, and a value cut short
+    /// are refused. A group is followed with a list rather than by recursion.
+    static func skipValue(number: Int32, wire: UInt8, _ d: Data, at i: Data.Index) throws -> Data.Index {
+        func fixed(_ width: Int) throws -> Data.Index {
+            guard d.endIndex - i >= width else { throw SkipFailure.truncated }
+            return i + width
+        }
+        switch wire {
+        case 0: return try readVarint(d, at: i).end
+        case 1: return try fixed(8)
+        case 2:
+            let (length, start) = try readVarint(d, at: i)
+            guard length <= UInt64(d.endIndex - start) else { throw SkipFailure.truncated }
+            return start + Int(length)
+        case 5: return try fixed(4)
+        case 3:
+            var open: [Int32] = [number]
+            var j = i
+            while let innermost = open.last {
+                let (inner, innerWire, next) = try readTag(d, at: j)
+                j = next
+                switch innerWire {
+                case 4:
+                    guard inner == innermost else { throw SkipFailure.endGroup }
+                    open.removeLast()
+                case 3:
+                    guard open.count <= maxGroupDepth else { throw SkipFailure.tooDeep }
+                    open.append(inner)
+                default:
+                    j = try skipValue(number: inner, wire: innerWire, d, at: j)
+                }
+            }
+            return j
+        case 4: throw SkipFailure.endGroup
+        default: throw SkipFailure.reserved
+        }
     }
 }
 

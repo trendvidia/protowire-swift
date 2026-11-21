@@ -123,6 +123,12 @@ public enum DecoderError: Error, CustomStringConvertible {
     case repeatedCountExceeded(limit: Int)
     /// A `pxf.BigFloat`'s binary exponent is past `Limits.maxBigFloatExponent` in magnitude.
     case bigFloatExponentExceeded(exponent: Int64, limit: Int)
+    /// A PB field whose value is corrupt, whichever field it is on: cut
+    /// short, wire type 6 or 7, or an end-group that ends nothing.
+    /// `reason` is protobuf-go's (`unexpected EOF`, `proto: cannot parse
+    /// reserved wire type`), and `context` places the field (` in map entry`,
+    /// ` in BigInt`), so the text is protowire-go's.
+    case corruptField(number: Int32, reason: String, context: String)
 
     public var description: String {
         switch self {
@@ -144,6 +150,8 @@ public enum DecoderError: Error, CustomStringConvertible {
             return "repeated field exceeds MaxRepeatedCount=\(limit)"
         case .bigFloatExponentExceeded(let e, let limit):
             return "pxf.BigFloat binary exponent \(e) exceeds MaxBigFloatExponent=\(limit)"
+        case .corruptField(let number, let reason, let context):
+            return "corrupt field \(number)\(context): \(reason)"
         }
     }
 }
