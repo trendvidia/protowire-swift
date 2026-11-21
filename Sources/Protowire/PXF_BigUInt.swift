@@ -7,7 +7,7 @@ import Foundation
 /// with no high zero limb. The costs are quadratic, which is why every caller
 /// bounds its inputs first (`Hardening.maxNumericLiteralDigits`,
 /// `Hardening.maxBigFloatExponent`).
-struct BigUInt: Equatable {
+struct BigUInt: Hashable {
     private(set) var limbs: [UInt32] = []
 
     init() {}
