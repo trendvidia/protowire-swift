@@ -136,6 +136,10 @@ extension PXF {
     /// bytes interpreted per `shape`: for anonymous/named, the bytes between
     /// `{` and matching `}`; for source, the dedented triple-quoted string
     /// contents; for descriptor, the base64-decoded FileDescriptorSet.
+    ///
+    /// A source body is read only from a triple-quoted string, so parsing
+    /// never yields one holding `"""`, which no triple-quoted string can
+    /// carry. A hand-built one formats to text that does not parse (#100).
     public struct ProtoDirective: Equatable {
         public var pos: Position
         public var shape: ProtoShape

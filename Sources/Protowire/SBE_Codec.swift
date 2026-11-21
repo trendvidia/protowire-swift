@@ -164,7 +164,7 @@ public final class SBEUnmarshaller {
             // source encoding, and a char[] says nothing about its own. Text in
             // another encoding belongs in a bytes field.
             let text = SBE.trimmingTrailingNULs(raw)
-            guard SBE.isValidUTF8(text) else { throw DecoderError.invalidUTF8 }
+            guard SBE.isValidUTF8(text) else { throw DecoderError.invalidUTF8(field: ft.name) }
             return String(decoding: text, as: UTF8.self)
         }
     }

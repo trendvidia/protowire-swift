@@ -373,6 +373,10 @@ extension PXF {
             }
         }
 
+        /// The error for a `@proto` source body written simple-quoted; the
+        /// text is protowire-go's.
+        static let protoSourceNotTriple = #"@proto source body must be a triple-quoted string ("""...""")"#
+
         /// Parses `@proto <body>`. `.atProto` is current on entry.
         /// Distinguishes four lexically-determined shapes (draft §3.4.5).
         private func parseProtoDirective() throws -> (ProtoDirective, Int) {
@@ -396,6 +400,13 @@ extension PXF {
                 return (ProtoDirective(pos: atPos, shape: .named, typeName: typeName,
                                        body: body, leadingComments: leading), end)
             case .string:
+                // The grammar admits only a triple-quoted source body
+                // (proto_source_body = triple_string). A simple-quoted one
+                // could carry `"""` through its escapes, which no formatter
+                // can write back (#100, protowire-go#305).
+                guard current.tripleQuoted else {
+                    throw ParserError.directiveExpected(current.pos, Parser.protoSourceNotTriple)
+                }
                 let bytes = current.value.data(using: .utf8) ?? Data()
                 advance()
                 let end = lexer.pos

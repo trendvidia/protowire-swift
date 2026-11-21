@@ -288,6 +288,85 @@ final class PXFDirectiveTests: XCTestCase {
         }
     }
 
+    /// A source body must be triple-quoted: the grammar's proto_source_body
+    /// is a triple_string. A simple-quoted body could carry `"""` through its
+    /// escapes, and no formatter can write that back (#100,
+    /// protowire-go#305). Every decode entry point parses through
+    /// `PXF.Parser`, so each is checked here, and so is a dataset document.
+    func testProto_source_mustBeTripleQuoted() {
+        struct Holder: Codable { var value: String? }
+        let want = #"[1:8] @proto source body must be a triple-quoted string ("""...""")"#
+        for src in [
+            #"@proto "syntax = \"proto3\";""#,
+            #"@proto "syntax = \"proto3\"; // a \"\"\" b""#, // go#305's body
+            #"@proto """#,
+        ] {
+            XCTAssertThrowsError(try PXF.Parser(string: src).parseDocument(), src) { err in
+                XCTAssertEqual("\(err)", want, src)
+            }
+            XCTAssertThrowsError(try PXFDecoder().decode(Holder.self, from: Data(src.utf8)), src) { err in
+                XCTAssertEqual("\(err)", want, src)
+            }
+            XCTAssertThrowsError(try PXFDecoder().decode(Holder.self, from: src), src) { err in
+                XCTAssertEqual("\(err)", want, src)
+            }
+            XCTAssertThrowsError(try PXFDecoder().unmarshalFull(Holder.self, from: src), src) { err in
+                XCTAssertEqual("\(err)", want, src)
+            }
+            XCTAssertThrowsError(try PXF.Parser(string: src + "\n@dataset T (a)\n(1)\n").parseDocument(), src) { err in
+                XCTAssertEqual("\(err)", want, src)
+            }
+        }
+
+        // After @type the error names the second line.
+        XCTAssertThrowsError(try PXF.Parser(string: "@type a.v1.M\n@proto \"x\"\nvalue = \"x\"\n").parseDocument()) { err in
+            XCTAssertEqual("\(err)", #"[2:8] @proto source body must be a triple-quoted string ("""...""")"#)
+        }
+    }
+
+    /// The triple-quoted body still reads, on the same line, across lines,
+    /// and with the string on the line after `@proto`, through the parser
+    /// and the decoder.
+    func testProto_source_tripleQuotedForms() throws {
+        struct Holder: Codable { var value: String? }
+        for src in [
+            "@proto \"\"\"syntax = \"proto3\";\"\"\"\nvalue = \"x\"\n",
+            "@proto \"\"\"\nsyntax = \"proto3\";\n\"\"\"\nvalue = \"x\"\n",
+            "@proto\n\"\"\"syntax = \"proto3\";\"\"\"\nvalue = \"x\"\n",
+            "@type a.v1.M\n@proto \"\"\"syntax = \"proto3\";\"\"\"\nvalue = \"x\"\n",
+        ] {
+            let doc = try PXF.Parser(string: src).parseDocument()
+            XCTAssertEqual(doc.protos.count, 1, src)
+            XCTAssertEqual(doc.protos[0].shape, .source, src)
+            XCTAssertEqual(String(decoding: doc.protos[0].body, as: UTF8.self), "syntax = \"proto3\";", src)
+            XCTAssertEqual(try PXFDecoder().decode(Holder.self, from: Data(src.utf8)).value, "x", src)
+            let (_, result) = try PXFDecoder().unmarshalFull(Holder.self, from: src)
+            XCTAssertEqual(result.protos.count, 1, src)
+        }
+    }
+
+    /// The descriptor form, a bytes literal, is a different token and stays
+    /// legal (proto-descr-body = 1*WSP bytes), an empty one included.
+    func testProto_descriptor_bytesStillAccepted() throws {
+        struct Holder: Codable { var value: String? }
+        let src = "@proto b\"\"\nvalue = \"x\"\n"
+        let doc = try PXF.Parser(string: src).parseDocument()
+        XCTAssertEqual(doc.protos.count, 1)
+        XCTAssertEqual(doc.protos[0].shape, .descriptor)
+        XCTAssertEqual(doc.protos[0].body, Data())
+        XCTAssertEqual(try PXFDecoder().decode(Holder.self, from: Data(src.utf8)).value, "x")
+    }
+
+    /// A hand-built source body holding `"""` cannot be written
+    /// triple-quoted, so `formatDocument`'s output for it does not parse.
+    /// Parsing never yields such a body (#100); this pins what the
+    /// `ProtoDirective` docs say.
+    func testFormat_handBuiltProtoSourceWithTripleQuote() {
+        let doc = PXF.Document(protos: [PXF.ProtoDirective(pos: PXF.Position(line: 1, column: 1), shape: .source,
+                                                           body: Data(#"a """ b"#.utf8))])
+        XCTAssertThrowsError(try PXF.Parser(string: PXF.Format.formatDocument(doc)).parseDocument())
+    }
+
     func testProto_anonymousBeforeDataset() throws {
         let src = """
         @proto { int32 id = 1; }

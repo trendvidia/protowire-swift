@@ -98,7 +98,9 @@ public enum Protowire {
     /// - Parameter value: The value to encode.
     /// - Returns: The ZigZag-encoded unsigned integer.
     public static func encodeZigZag(_ value: Int64) -> UInt64 {
-        return UInt64((value << 1) ^ (value >> 63))
+        // The bit pattern: half the Int64 range zigzags past Int64.max,
+        // and a value-preserving UInt64(_:) traps on it.
+        return UInt64(bitPattern: (value << 1) ^ (value >> 63))
     }
 
     /// Decodes a ZigZag-encoded unsigned integer into a signed 64-bit integer.

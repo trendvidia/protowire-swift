@@ -29,10 +29,10 @@ final class PBValuesTableTests: XCTestCase {
         var v: Int64
         enum CodingKeys: Int, CodingKey { case v = 1 }
     }
-    /// Go tags both fields `zigzag` (sint64, sint32). PBEncoder has no way to
-    /// say so, so this writes them as int64 and int32 (#70).
+    /// Go tags both fields `zigzag` (sint64, sint32), which a Swift type says
+    /// through the field's type (#70).
     struct Zigzag: Encodable {
-        var d: Int64, e: Int32
+        var d: SInt64, e: SInt32
         enum CodingKeys: Int, CodingKey { case d = 1, e }
     }
     struct Packed: Encodable {
